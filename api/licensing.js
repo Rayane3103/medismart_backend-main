@@ -248,11 +248,38 @@ function publicLicenseState(license, registration = null) {
   };
 }
 
+// Trials use calendar days in Algeria (Africa/Algiers, UTC+1).
+// A 1-day key activated any time on 10 July expires at 00:00 on 11 July.
+// A 7-day key activated on 10 July expires at 00:00 on 17 July (days 10–16 inclusive).
+export const TRIAL_CALENDAR_TIMEZONE = "Africa/Algiers";
+
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+export function computeCalendarTrialExpiry(activatedAt, trialDays) {
+  const days = Math.max(1, parseInt(trialDays, 10) || 1);
+  const ymd = new Intl.DateTimeFormat("en-CA", {
+    timeZone: TRIAL_CALENDAR_TIMEZONE,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(activatedAt));
+  const [y, m, d] = ymd.split("-").map(Number);
+  const expireUtc = new Date(Date.UTC(y, m - 1, d));
+  expireUtc.setUTCDate(expireUtc.getUTCDate() + days);
+  const ey = expireUtc.getUTCFullYear();
+  const em = expireUtc.getUTCMonth() + 1;
+  const ed = expireUtc.getUTCDate();
+  return `${ey}-${pad2(em)}-${pad2(ed)}T00:00:00+01:00`;
+}
+
 function computeExpiry(license, activatedAt) {
   if (license.license_type !== "trial") return { starts_at: activatedAt, expires_at: null };
-  const start = new Date(activatedAt);
-  const end = new Date(start.getTime() + license.trial_days * 24 * 60 * 60 * 1000);
-  return { starts_at: start.toISOString(), expires_at: end.toISOString() };
+  return {
+    starts_at: activatedAt,
+    expires_at: computeCalendarTrialExpiry(activatedAt, license.trial_days),
+  };
 }
 
 async function buildActivationResponse(license, registration) {

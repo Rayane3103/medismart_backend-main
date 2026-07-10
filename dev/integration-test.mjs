@@ -98,7 +98,8 @@ check("unknown key rejected", r.status === 404);
 r = await call("/api/activation/activate", { method: "POST", body: { ...registration, serial_key: trialKey } });
 const activationToken = r.data.activation_token;
 check("activation succeeds", r.status === 200 && Boolean(activationToken), JSON.stringify(r.data));
-check("trial expiry returned", r.data.license?.license_type === "trial" && Boolean(r.data.license?.expires_at));
+check("trial expiry returned", r.status === 200 && r.data.license?.license_type === "trial" && Boolean(r.data.license?.expires_at));
+check("trial calendar midnight expiry", String(r.data.license?.expires_at || "").includes("T00:00:00+01:00"), r.data.license?.expires_at);
 
 // 11. Token verifies
 r = await call("/api/activation/verify", { method: "POST", body: { activation_token: activationToken } });

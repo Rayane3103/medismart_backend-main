@@ -5,7 +5,7 @@ Cloud backend for MediSmart Pro. It provides:
 - Super admin panel at `/admin` (Dashboard, Registrations, Licenses, AI doctors & keys)
 - Doctor registration sync from the desktop app (offline-first registrations)
 - Serial key / license management: one-time keys `MEDI-XXXX-XXXX-XXXX-XXXX`,
-  trial (N days) or lifetime, stored hashed, revocable
+  trial (N calendar days, Algeria time — expires at midnight) or lifetime, stored hashed, revocable
 - Activation endpoint returning an HMAC-signed activation token for the desktop app
 - Named Groq/Gemini API keys managed in the admin panel
 - Doctor accounts with email, daily usage limit, monthly usage limit, and one assigned named API key
