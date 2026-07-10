@@ -2,8 +2,18 @@
 // Handles the admin panel, doctor auth, usage limits, and Groq/Gemini proxying.
 
 import crypto from "node:crypto";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { redis } from "./redis.js";
 import { ADMIN_CSS, ADMIN_HTML, ADMIN_JS } from "./admin-ui.js";
+import {
+  adminLogin,
+  adminLogout,
+  adminUsersConfigured,
+  getAdminSession,
+  verifyAdminRequest,
+} from "./admin-auth.js";
 import {
   handleLicensingPublicRoutes,
   handleLicensingAdminRoutes,
@@ -11,6 +21,19 @@ import {
   saveRegistration,
   ensureRegistrationDefaults,
 } from "./licensing.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+let _logoBytes = null;
+function adminLogoBytes() {
+  if (!_logoBytes) {
+    try {
+      _logoBytes = readFileSync(join(__dirname, "assets", "medismart-logo.png"));
+    } catch {
+      _logoBytes = Buffer.alloc(0);
+    }
+  }
+  return _logoBytes;
+}
 
 const AI_PROVIDERS = {
   groq: {
@@ -115,27 +138,13 @@ function providerConfig() {
   }]));
 }
 
-async function getAdminToken() {
-  const configuredToken = String(process.env.ADMIN_TOKEN || "").trim();
-  if (configuredToken) {
-    const storedToken = await redis.get("admin:token");
-    if (storedToken !== configuredToken) await redis.set("admin:token", configuredToken);
-    return configuredToken;
-  }
-
-  let tok = await redis.get("admin:token");
-  if (!tok) {
-    tok = crypto.randomBytes(24).toString("hex");
-    await redis.set("admin:token", tok);
-  }
-  return tok;
+async function verifyAdmin(req) {
+  const session = await verifyAdminRequest(req);
+  return Boolean(session);
 }
 
-async function verifyAdmin(req) {
-  const expected = await getAdminToken();
-  const got = (req.headers["x-admin-token"] || req.headers["authorization"] || "")
-    .toString().replace(/^Bearer\s+/i, "").trim();
-  return Boolean(got) && got === expected;
+async function verifyAdminSession(req) {
+  return verifyAdminRequest(req);
 }
 
 async function verifyDoctor(req) {
@@ -694,6 +703,11 @@ export default async function handler(req, res) {
     if (req.method === "GET" && path === "/admin.js") {
       return send(res, 200, "text/javascript; charset=utf-8", ADMIN_JS, { "Cache-Control": "public, max-age=300" });
     }
+    if (req.method === "GET" && (path === "/admin/logo.png" || path === "/logo.png")) {
+      const logo = adminLogoBytes();
+      if (!logo.length) return err(res, 404, "Logo introuvable");
+      return send(res, 200, "image/png", logo, { "Cache-Control": "public, max-age=86400" });
+    }
 
     // ---- public ----
     if (path === "/api" || path === "/api/health") {
@@ -706,6 +720,14 @@ export default async function handler(req, res) {
 
     // ---- licensing: registration sync + serial key activation (public) ----
     if (await handleLicensingPublicRoutes(req, res, path, { readJson, ok, err })) return;
+
+    // ---- admin sign-in (public) ----
+    if (path === "/api/admin/login" && req.method === "POST") {
+      const body = await readJson(req);
+      const result = await adminLogin(body.username, body.password);
+      if (!result.ok) return err(res, 401, result.error);
+      return ok(res, { ok: true, token: result.token, user: result.user });
+    }
 
     // ---- doctor authentication: exchange uuid+secret for session token ----
     if (path === "/api/auth/doctor") {
@@ -824,7 +846,22 @@ export default async function handler(req, res) {
     // SUPER ADMIN ENDPOINTS (require X-Admin-Token)
     // =============================================================
     if (path.startsWith("/api/admin/")) {
-      if (!(await verifyAdmin(req))) return err(res, 401, "Token Super Admin invalide");
+      const session = await verifyAdminSession(req);
+      if (!session) return err(res, 401, "Session administrateur invalide ou expirée");
+
+      if (path === "/api/admin/logout" && req.method === "POST") {
+        const token = (req.headers["x-admin-token"] || "").toString().trim();
+        await adminLogout(token);
+        return ok(res, { ok: true });
+      }
+
+      if (path === "/api/admin/me" && req.method === "GET") {
+        return ok(res, {
+          ok: true,
+          user: session,
+          auth_configured: adminUsersConfigured(),
+        });
+      }
 
       // Licensing admin routes (registrations, licenses, stats).
       if (await handleLicensingAdminRoutes(req, res, path, { readJson, ok, err })) return;
@@ -863,6 +900,7 @@ export default async function handler(req, res) {
           doctors: (await listDoctorIds()).length,
           api_keys: (await listApiKeyIds()).length,
           providers: providerConfig(),
+          admin: session.username,
         });
       }
 
@@ -927,7 +965,6 @@ export default async function handler(req, res) {
         return ok(res, {
           rows: doctors.map((doctor) => adminDoctorState(doctor, keyMap[doctor.assigned_api_key_id] || null)),
           api_keys: keys.map((key) => publicApiKeyState(key, counts[key.id] || 0)),
-          credit_costs: await getCreditCosts(),
           providers: providerConfig(),
           default_limits: DEFAULT_LIMITS,
         });
@@ -981,17 +1018,6 @@ export default async function handler(req, res) {
       if (logsMatch) {
         const logs = await readLogs(logsMatch[1], 200);
         return ok(res, { rows: logs });
-      }
-
-      // Update credit costs config
-      if (path === "/api/admin/credit-costs" && req.method === "PUT") {
-        const body = await readJson(req);
-        const safe = {};
-        for (const k of Object.keys(DEFAULT_COSTS)) {
-          if (typeof body[k] === "number") safe[k] = Math.max(0, parseInt(body[k], 10));
-        }
-        await redis.set("config:credit_costs", safe);
-        return ok(res, { credit_costs: await getCreditCosts() });
       }
 
       return err(res, 404, "Route admin inconnue");

@@ -21,7 +21,19 @@ Required:
 ```txt
 UPSTASH_REDIS_REST_URL
 UPSTASH_REDIS_REST_TOKEN
-ADMIN_TOKEN
+ADMIN_USERS
+```
+
+`ADMIN_USERS` defines admin sign-in accounts for the web panel (username:password pairs, comma-separated):
+
+```txt
+ADMIN_USERS=mouad:Mouad123,rayane:24052003
+```
+
+Optional legacy token (scripts/tests only):
+
+```txt
+ADMIN_TOKEN=your-long-random-token
 ```
 
 Optional model defaults:
@@ -54,7 +66,7 @@ Open:
 http://localhost:3000/admin
 ```
 
-Use `ADMIN_TOKEN` to log in.
+Sign in with a username and password from `ADMIN_USERS`.
 
 ## Render Deploy
 
@@ -111,21 +123,23 @@ Use header `X-Doctor-Token`.
 
 ### Super Admin
 
-Use header `X-Admin-Token`.
+Use header `X-Admin-Token` (session token from `POST /api/admin/login`).
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/api/admin/health` | Verify admin token |
-| GET | `/api/admin/doctors` | Doctors, named keys, action costs |
+| POST | `/api/admin/login` | Public — `{ username, password }` → session token |
+| GET | `/api/admin/me` | Current admin session |
+| POST | `/api/admin/logout` | End session |
+| GET | `/api/admin/health` | Verify session |
+| GET | `/api/admin/doctors` | Doctors, named keys, default limits |
 | POST | `/api/admin/doctors` | Create doctor with email, limits, assigned key |
 | PATCH | `/api/admin/doctors/:id` | Update doctor limits, key assignment, status, or usage |
 | DELETE | `/api/admin/doctors/:id` | Delete doctor |
-| GET | `/api/admin/doctors/:id/logs` | Doctor logs |
+| GET | `/api/admin/doctors/:id/logs` | Doctor request logs |
 | GET | `/api/admin/api-keys` | List named API keys without revealing secrets |
 | POST | `/api/admin/api-keys` | Add named Groq/Gemini key |
 | PATCH | `/api/admin/api-keys/:id` | Update named key, model, provider, status, or secret |
 | DELETE | `/api/admin/api-keys/:id` | Delete named key |
-| PUT | `/api/admin/credit-costs` | Update action costs |
 | GET | `/api/admin/stats` | Licensing dashboard counters |
 | GET | `/api/admin/registrations` | List synced doctor registrations (+ linked license) |
 | DELETE | `/api/admin/registrations/:id` | Delete a registration |
@@ -135,9 +149,4 @@ Use header `X-Admin-Token`.
 | POST | `/api/admin/licenses/:id/revoke` | Revoke a license |
 | DELETE | `/api/admin/licenses/:id` | Delete an unused license |
 
-## Default Action Costs
-
-- Chat: 1
-- Lab/PDF analysis: 3
-- ECG/Image analysis: 5
-- Multimodal/IRM: 10
+Cloud AI usage is tracked as **requests per day** and **requests per month** per doctor account (limits set in the admin panel).

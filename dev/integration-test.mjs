@@ -1,12 +1,23 @@
 // End-to-end test of the licensing flow against a locally running admin server.
-// Prereq: mock-upstash on 8790, server.js on 8791 with ADMIN_TOKEN=testadmin.
+// Prereq: mock-upstash on 8790, server.js on 8791 with ADMIN_USERS=testadmin:testpass
 
 const BASE = "http://127.0.0.1:8791";
-const ADMIN = { "X-Admin-Token": "testadmin", "Content-Type": "application/json" };
 const PUBLIC = { "Content-Type": "application/json" };
 
 let passed = 0;
 let failed = 0;
+let ADMIN = { "Content-Type": "application/json" };
+
+async function adminHeaders() {
+  if (ADMIN["X-Admin-Token"]) return ADMIN;
+  const login = await call("/api/admin/login", {
+    method: "POST",
+    body: { username: "testadmin", password: "testpass" },
+  });
+  if (!login.data.token) throw new Error("admin login failed");
+  ADMIN = { "X-Admin-Token": login.data.token, "Content-Type": "application/json" };
+  return ADMIN;
+}
 
 function check(name, condition, extra = "") {
   if (condition) { passed++; console.log(`  PASS  ${name}`); }
@@ -23,6 +34,12 @@ async function call(path, { method = "GET", headers = PUBLIC, body } = {}) {
   return { status: res.status, data };
 }
 
+await adminHeaders();
+
+// 0. Login works
+let r = await call("/api/admin/me", { headers: ADMIN });
+check("admin session valid", r.status === 200 && r.data.user?.username === "testadmin");
+
 const registration = {
   client_registration_id: "test-client-reg-001",
   full_name: "Dr Amine Test",
@@ -38,7 +55,7 @@ const registration = {
 };
 
 // 1. Health
-let r = await call("/api/health");
+r = await call("/api/health");
 check("health", r.status === 200 && r.data.ok);
 
 // 2. Registration sync (create)
@@ -57,7 +74,7 @@ const regId = regRow?.id;
 
 // 5. Admin auth required
 r = await call("/api/admin/registrations");
-check("admin route rejects missing token", r.status === 401);
+check("admin route rejects missing session", r.status === 401);
 
 // 6. Generate trial license (7 days) linked to the registration
 r = await call("/api/admin/licenses", { method: "POST", headers: ADMIN, body: { license_type: "trial", trial_days: 7, registration_id: regId } });
