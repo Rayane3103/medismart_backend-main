@@ -117,7 +117,35 @@ async function readJson(req) {
   });
 }
 
-function uuid() { return crypto.randomUUID(); }
+function resolveRequestPath(req) {
+  const host = req.headers.host || "localhost";
+  const url = new URL(req.url || "/", `http://${host}`);
+
+  // Vercel rewrite sends the real path as ?__path=... (see vercel.json).
+  const rewritten = url.searchParams.get("__path");
+  if (rewritten) {
+    const clean = rewritten.startsWith("/") ? rewritten : `/${rewritten}`;
+    return clean.replace(/\/+$/, "") || "/";
+  }
+
+  // Other platform headers (fallback).
+  const headerPath = req.headers["x-vercel-original-path"]
+    || req.headers["x-forwarded-uri"]
+    || req.headers["x-original-url"];
+  if (headerPath) {
+    try {
+      const parsed = headerPath.startsWith("http")
+        ? new URL(headerPath)
+        : new URL(headerPath, `http://${host}`);
+      return parsed.pathname.replace(/\/+$/, "") || "/";
+    } catch {
+      const clean = String(headerPath).split("?")[0];
+      return (clean.startsWith("/") ? clean : `/${clean}`).replace(/\/+$/, "") || "/";
+    }
+  }
+
+  return url.pathname.replace(/\/+$/, "") || "/";
+}
 
 function normalizeProvider(provider) {
   const key = String(provider || "groq").toLowerCase().trim();
@@ -695,8 +723,7 @@ export default async function handler(req, res) {
   try {
     if (req.method === "OPTIONS") return ok(res, {});
 
-    const url = new URL(req.url, `http://${req.headers.host}`);
-    const path = url.pathname.replace(/\/+$/, "") || "/";
+    const path = resolveRequestPath(req);
 
     // ---- admin frontend ----
     if (req.method === "GET" && (path === "/" || path === "/admin")) {
@@ -716,7 +743,13 @@ export default async function handler(req, res) {
 
     // ---- public ----
     if (path === "/api" || path === "/api/health") {
-      return ok(res, { ok: true, service: "medismart-ai-credits", providers: providerConfig(), default_limits: DEFAULT_LIMITS });
+      return ok(res, {
+        ok: true,
+        service: "medismart-ai-credits",
+        providers: providerConfig(),
+        default_limits: DEFAULT_LIMITS,
+        features: { licensing: true, registration_sync: true, activation: true },
+      });
     }
 
     if (path === "/api/plans") {
