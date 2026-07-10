@@ -20,7 +20,12 @@ import {
   getRegistration,
   saveRegistration,
   ensureRegistrationDefaults,
+  verifyActivationToken,
+  getLicense,
 } from "./licensing.js";
+
+const CLOUD_NOT_PROVISIONED_MSG =
+  "L'accès IA n'est pas encore activé. Contactez votre administrateur MediSmart.";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 let _logoBytes = null;
@@ -729,7 +734,61 @@ export default async function handler(req, res) {
       return ok(res, { ok: true, token: result.token, user: result.user });
     }
 
-    // ---- doctor authentication: exchange uuid+secret for session token ----
+    // ---- doctor authentication via activation proof (desktop auto-connect) ----
+    if (path === "/api/auth/cloud-session") {
+      if (req.method !== "POST") return err(res, 405, "Method not allowed");
+      const body = await readJson(req);
+      const activationToken = String(body.activation_token || "").trim();
+      const clientRegistrationId = String(body.client_registration_id || "").trim();
+      const deviceFingerprint = String(body.device_fingerprint || "").trim();
+      if (!activationToken || !clientRegistrationId) {
+        return err(res, 400, "activation_token and client_registration_id required");
+      }
+
+      const payload = await verifyActivationToken(activationToken);
+      if (!payload) return err(res, 401, "Preuve d'activation invalide");
+
+      if (String(payload.client_registration_id || "") !== clientRegistrationId) {
+        return err(res, 403, "Inscription non concordante");
+      }
+
+      const registration = await getRegistration(payload.registration_id);
+      if (!registration) return err(res, 404, "Inscription introuvable");
+      const reg = ensureRegistrationDefaults({ ...registration });
+
+      const allowedDevices = new Set(
+        [String(payload.device_fingerprint || "").trim(), reg.device_fingerprint].filter(Boolean),
+      );
+      if (deviceFingerprint && allowedDevices.size && !allowedDevices.has(deviceFingerprint)) {
+        return err(res, 403, "Appareil non autorisé pour ce compte");
+      }
+
+      const license = await getLicense(payload.license_id);
+      if (!license || license.status === "revoked") {
+        return err(res, 403, "Licence révoquée ou introuvable");
+      }
+      if (license.license_type === "trial" && license.expires_at) {
+        if (Date.now() >= new Date(license.expires_at).getTime()) {
+          return err(res, 403, "Période d'essai expirée");
+        }
+      }
+
+      if (!reg.cloud_doctor_id) return err(res, 403, CLOUD_NOT_PROVISIONED_MSG);
+
+      const doctor = await getDoctor(reg.cloud_doctor_id);
+      if (!doctor) return err(res, 403, CLOUD_NOT_PROVISIONED_MSG);
+
+      const fresh = ensureDoctorDefaults({ ...doctor });
+      if (!fresh.active) return err(res, 403, "Compte IA inactif. Contactez votre administrateur MediSmart.");
+      if (!fresh.ai_enabled) return err(res, 403, "IA désactivée pour ce compte. Contactez votre administrateur MediSmart.");
+
+      await saveDoctor(fresh);
+      const token = uuid();
+      await redis.set(`doctor:token:${token}`, fresh.id, { ex: 60 * 60 * 24 * 7 });
+      return ok(res, { token, doctor: await publicDoctorWithAssignedKey(fresh), provisioned: true });
+    }
+
+    // ---- doctor authentication: exchange uuid+secret for session token (legacy/scripts) ----
     if (path === "/api/auth/doctor") {
       if (req.method !== "POST") return err(res, 405, "Method not allowed");
       const { doctor_id, secret } = await readJson(req);
@@ -881,6 +940,7 @@ export default async function handler(req, res) {
           email: String(body.email || reg.email || "").trim(),
           name: String(body.name || reg.full_name || "").trim(),
           secret: crypto.randomBytes(12).toString("hex"),
+          registration_id: reg.id,
           monthly_limit: toLimit(body.monthly_limit, DEFAULT_LIMITS.monthly_limit),
           daily_limit: toLimit(body.daily_limit, DEFAULT_LIMITS.daily_limit),
           assigned_api_key_id: String(body.assigned_api_key_id || "").trim(),
@@ -891,7 +951,9 @@ export default async function handler(req, res) {
         await indexDoctor(doctor.id);
         reg.cloud_doctor_id = doctor.id;
         await saveRegistration(reg);
-        return ok(res, { doctor: await adminDoctorWithAssignedKey(doctor), registration_id: reg.id }, 201);
+        const doctorPublic = await adminDoctorWithAssignedKey(doctor);
+        delete doctorPublic.secret;
+        return ok(res, { doctor: doctorPublic, registration_id: reg.id }, 201);
       }
 
       if (path === "/api/admin/health") {

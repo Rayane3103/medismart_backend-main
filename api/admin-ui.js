@@ -275,14 +275,45 @@ export const ADMIN_HTML = `<!doctype html>
     </div>
   </dialog>
 
+  <dialog class="modal" id="cloudDoctorDialog">
+    <div class="modal-card">
+      <header class="modal-head">
+        <div>
+          <p class="kicker">Inscription</p>
+          <h2>Créer un compte IA</h2>
+        </div>
+        <button class="icon-close" type="button" data-close-dialog="cloudDoctorDialog" aria-label="Fermer">×</button>
+      </header>
+      <p class="subtle" style="margin-bottom:14px">Configurez l'accès IA maintenant ou utilisez les valeurs par défaut. Vous pourrez modifier le compte plus tard dans <strong>IA &amp; Médecins</strong>.</p>
+      <div class="panel panel--hint" style="margin-bottom:14px;padding:14px 16px">
+        <div class="cell-title" id="cloudDoctorRegName">—</div>
+        <div class="cell-sub" id="cloudDoctorRegEmail"></div>
+      </div>
+      <div class="form-grid">
+        <label><span>Clé API assignée</span><select id="cloudDoctorAssignedKey"></select></label>
+        <label><span>Limite requêtes / mois</span><input id="cloudDoctorMonthlyLimit" type="number" min="0" step="1"></label>
+        <label><span>Limite requêtes / jour</span><input id="cloudDoctorDailyLimit" type="number" min="0" step="1"></label>
+      </div>
+      <div class="checks">
+        <label class="check"><input id="cloudDoctorActive" type="checkbox" checked><span>Compte actif</span></label>
+        <label class="check"><input id="cloudDoctorAiEnabled" type="checkbox" checked><span>IA activée</span></label>
+      </div>
+      <footer class="modal-foot">
+        <button class="btn ghost" type="button" data-close-dialog="cloudDoctorDialog">Annuler</button>
+        <button class="btn ghost" type="button" id="cloudDoctorSkip">Défauts (sans configurer)</button>
+        <button class="btn primary" type="button" id="cloudDoctorSubmit">Créer le compte IA</button>
+      </footer>
+    </div>
+  </dialog>
+
   <dialog class="modal" id="credentialsDialog">
     <div class="modal-card">
       <header class="modal-head">
-        <div><p class="kicker">Identifiants</p><h2>Connexion médecin (app desktop)</h2></div>
+        <div><p class="kicker">Connexion</p><h2>Accès IA automatique</h2></div>
         <button class="icon-close" type="button" data-close-dialog="credentialsDialog" aria-label="Fermer">×</button>
       </header>
-      <div class="copy-row"><label><span>Doctor ID</span><input id="createdDoctorId" readonly></label><button class="btn ghost" type="button" data-copy="createdDoctorId">Copier</button></div>
-      <div class="copy-row"><label><span>Secret</span><input id="createdDoctorSecret" readonly></label><button class="btn ghost" type="button" data-copy="createdDoctorSecret">Copier</button></div>
+      <p class="subtle">Les médecins n'ont plus besoin de Doctor ID ni de secret. L'application desktop se connecte automatiquement après activation de licence, si vous avez créé le compte IA et assigné une clé API.</p>
+      <div class="copy-row"><label><span>Référence interne</span><input id="createdDoctorId" readonly></label></div>
       <footer class="modal-foot"><button class="btn primary" type="button" data-close-dialog="credentialsDialog">Fermer</button></footer>
     </div>
   </dialog>
@@ -476,7 +507,8 @@ export const ADMIN_JS = `(function () {
     registrations: [], licenses: [], stats: {},
     regQuery: "", regStatusFilter: "all",
     licenseQuery: "", licenseStatusFilter: "all",
-    editingDoctorId: "", editingKeyId: ""
+    editingDoctorId: "", editingKeyId: "",
+    pendingCloudDoctorRegistrationId: ""
   };
 
   var el = {};
@@ -616,11 +648,12 @@ export const ADMIN_JS = `(function () {
   }
 
   function renderDoctorKeyOptions() {
-    var html = '<option value="">Aucune clé</option>';
+    var html = '<option value="">Aucune clé (à assigner plus tard)</option>';
     state.apiKeys.forEach(function (k) {
       html += '<option value="' + escapeHtml(k.id) + '">' + escapeHtml(k.name) + ' — ' + escapeHtml(k.provider_label) + '</option>';
     });
     el.doctorAssignedKey.innerHTML = html;
+    if (el.cloudDoctorAssignedKey) el.cloudDoctorAssignedKey.innerHTML = html;
   }
 
   function badge(cls, text) { return '<span class="badge ' + cls + '">' + escapeHtml(text) + '</span>'; }
@@ -664,7 +697,7 @@ export const ADMIN_JS = `(function () {
       return '<tr><td><div class="cell-title">' + escapeHtml(r.email || "—") + '</div>' +
         (r.active ? badge("green","Actif") : badge("red","Inactif")) +
         (r.ai_enabled ? badge("blue","IA on") : badge("amber","IA off")) + '</td>' +
-        '<td><div class="code">' + escapeHtml(r.doctor_id) + '</div><div class="code" style="margin-top:6px">' + escapeHtml(r.secret || "") + '</div></td>' +
+        '<td><div class="cell-sub">Connexion automatique</div><div class="cell-sub">App desktop après activation</div></td>' +
         '<td><div class="cell-sub">' + escapeHtml(r.assigned_api_key_name || "Aucune") + '</div><div class="cell-sub">' + escapeHtml(r.ai_provider_label || "") + ' ' + escapeHtml(r.ai_model || "") + '</div></td>' +
         '<td>' + usageBars(r.monthly_used, r.monthly_limit, r.daily_used, r.daily_limit) + '</td>' +
         '<td class="row-actions">' +
@@ -673,7 +706,7 @@ export const ADMIN_JS = `(function () {
           '<button class="btn danger" type="button" data-action="delete-doctor" data-id="' + escapeHtml(r.doctor_id) + '">Supprimer</button>' +
         '</td></tr>';
     }).join("");
-    el.doctorRows.innerHTML = '<table class="data-table"><thead><tr><th>Compte</th><th>Identifiants</th><th>Clé IA</th><th>Requêtes</th><th></th></tr></thead><tbody>' + html + '</tbody></table>';
+    el.doctorRows.innerHTML = '<table class="data-table"><thead><tr><th>Compte</th><th>Connexion</th><th>Clé IA</th><th>Requêtes</th><th></th></tr></thead><tbody>' + html + '</tbody></table>';
   }
 
   function filteredRegistrations() {
@@ -736,6 +769,51 @@ export const ADMIN_JS = `(function () {
   function findKey(id) { return state.apiKeys.find(function (k) { return k.id === id; }); }
   function findDoctor(id) { return state.rows.find(function (r) { return r.doctor_id === id; }); }
   function findRegistration(id) { return state.registrations.find(function (r) { return r.id === id; }); }
+
+  function openCloudDoctorDialog(regId) {
+    var reg = findRegistration(regId);
+    if (!reg) { showToast("Inscription introuvable", true); return; }
+    if (reg.cloud_doctor_id) { showToast("Un compte IA est déjà lié à cette inscription.", true); return; }
+    state.pendingCloudDoctorRegistrationId = regId;
+    el.cloudDoctorRegName.textContent = reg.full_name || "—";
+    el.cloudDoctorRegEmail.textContent = [reg.specialty, reg.email, reg.phone, reg.wilaya].filter(Boolean).join(" · ") || "—";
+    el.cloudDoctorAssignedKey.value = state.apiKeys[0] ? state.apiKeys[0].id : "";
+    el.cloudDoctorMonthlyLimit.value = state.defaults.monthly_limit;
+    el.cloudDoctorDailyLimit.value = state.defaults.daily_limit;
+    el.cloudDoctorActive.checked = true;
+    el.cloudDoctorAiEnabled.checked = true;
+    el.cloudDoctorDialog.showModal();
+  }
+
+  async function submitCloudDoctor(useDefaults) {
+    var regId = state.pendingCloudDoctorRegistrationId;
+    if (!regId) return;
+    var body = {};
+    if (!useDefaults) {
+      body = {
+        assigned_api_key_id: el.cloudDoctorAssignedKey.value,
+        monthly_limit: parseInt(el.cloudDoctorMonthlyLimit.value, 10) || 0,
+        daily_limit: parseInt(el.cloudDoctorDailyLimit.value, 10) || 0,
+        active: el.cloudDoctorActive.checked,
+        ai_enabled: el.cloudDoctorAiEnabled.checked,
+      };
+    }
+    setBusy(el.cloudDoctorSubmit, true);
+    setBusy(el.cloudDoctorSkip, true);
+    try {
+      await apiFetch("/api/admin/registrations/" + encodeURIComponent(regId) + "/create-cloud-doctor", { method: "POST", body: body });
+      el.cloudDoctorDialog.close();
+      state.pendingCloudDoctorRegistrationId = "";
+      await loadData();
+      showToast(useDefaults ? "Compte IA créé (valeurs par défaut)" : "Compte IA créé — connexion automatique activée");
+    } catch (e) { showToast(e.message, true); }
+    finally {
+      setBusy(el.cloudDoctorSubmit, false);
+      setBusy(el.cloudDoctorSkip, false);
+    }
+  }
+
+  function createCloudDoctor(id) { openCloudDoctorDialog(id); }
   function defaultModel(p) { return state.providers[p] ? state.providers[p].default_model : ""; }
 
   function openLicenseDialog(regId) {
@@ -835,13 +913,12 @@ export const ADMIN_JS = `(function () {
       if (state.editingDoctorId) result = await apiFetch("/api/admin/doctors/" + encodeURIComponent(state.editingDoctorId), { method: "PATCH", body: body });
       else result = await apiFetch("/api/admin/doctors", { method: "POST", body: body });
       el.doctorDialog.close(); await loadData(); showToast("Compte enregistré");
-      if (!state.editingDoctorId && result.doctor) showCredentials(result.doctor);
+      if (!state.editingDoctorId && result.doctor) showToast("Le médecin se connectera automatiquement depuis l'application desktop.");
     } catch (err) { showToast(err.message, true); } finally { setBusy(btn, false); }
   }
 
   function showCredentials(doctor) {
     el.createdDoctorId.value = doctor.doctor_id || doctor.id || "";
-    el.createdDoctorSecret.value = doctor.secret || "";
     el.credentialsDialog.showModal();
   }
 
@@ -850,7 +927,6 @@ export const ADMIN_JS = `(function () {
   async function deleteRegistration(id) { if (!confirm("Supprimer cette inscription ?")) return; try { await apiFetch("/api/admin/registrations/" + encodeURIComponent(id), { method: "DELETE" }); await loadData(); showToast("Inscription supprimée"); } catch (e) { showToast(e.message, true); } }
   async function revokeLicense(id) { if (!confirm("Révoquer cette licence ?")) return; try { await apiFetch("/api/admin/licenses/" + encodeURIComponent(id) + "/revoke", { method: "POST" }); await loadData(); showToast("Licence révoquée"); } catch (e) { showToast(e.message, true); } }
   async function deleteLicense(id) { if (!confirm("Supprimer cette licence non utilisée ?")) return; try { await apiFetch("/api/admin/licenses/" + encodeURIComponent(id), { method: "DELETE" }); await loadData(); showToast("Licence supprimée"); } catch (e) { showToast(e.message, true); } }
-  async function createCloudDoctor(id) { if (!confirm("Créer un compte IA pour ce médecin ?")) return; try { var r = await apiFetch("/api/admin/registrations/" + encodeURIComponent(id) + "/create-cloud-doctor", { method: "POST", body: {} }); await loadData(); showToast("Compte IA créé"); if (r.doctor) showCredentials(r.doctor); } catch (e) { showToast(e.message, true); } }
 
   async function openLogs(id) {
     var row = findDoctor(id);
@@ -936,6 +1012,8 @@ export const ADMIN_JS = `(function () {
     el.licenseForm.addEventListener("submit", saveLicense);
     el.keyForm.addEventListener("submit", saveKey);
     el.doctorForm.addEventListener("submit", saveDoctor);
+    el.cloudDoctorSubmit.addEventListener("click", function () { submitCloudDoctor(false); });
+    el.cloudDoctorSkip.addEventListener("click", function () { submitCloudDoctor(true); });
     el.licenseType.addEventListener("change", syncTrialDays);
     el.keyProvider.addEventListener("change", function () { if (!state.editingKeyId) el.keyModel.value = defaultModel(el.keyProvider.value); });
     el.regSearchInput.addEventListener("input", function () { state.regQuery = el.regSearchInput.value; renderRegistrations(); });
@@ -966,7 +1044,8 @@ export const ADMIN_JS = `(function () {
      "serialDialog","generatedSerialKey","generatedSerialMeta",
      "keyDialog","keyForm","keyDialogMode","keyDialogTitle","keyId","keyName","keyProvider","keyModel","keySecret","keyActive","clearKeyWrap","clearKeySecret",
      "doctorDialog","doctorForm","doctorDialogMode","doctorDialogTitle","doctorId","doctorEmail","doctorAssignedKey","doctorMonthlyLimit","doctorDailyLimit","doctorActive","doctorAiEnabled","doctorUsageTools","setMonthlyUsed","setDailyUsed","resetMonthly","resetDaily",
-     "logsDialog","logsTitle","logsRows","credentialsDialog","createdDoctorId","createdDoctorSecret","toast"
+     "cloudDoctorDialog","cloudDoctorRegName","cloudDoctorRegEmail","cloudDoctorAssignedKey","cloudDoctorMonthlyLimit","cloudDoctorDailyLimit","cloudDoctorActive","cloudDoctorAiEnabled","cloudDoctorSubmit","cloudDoctorSkip",
+     "logsDialog","logsTitle","logsRows","credentialsDialog","createdDoctorId","toast"
     ].forEach(function (id) { el[id] = byId(id); });
     bindEvents();
     setView("dashboard");

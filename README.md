@@ -89,13 +89,14 @@ https://your-service.onrender.com/admin
 
 1. Add a named API key, for example `Groq main` or `Gemini backup`.
 2. Choose the provider and model for that key.
-3. Create a doctor with:
-   - Email
-   - Monthly usage limit
-   - Daily usage limit
+3. From **Inscriptions**, click **Créer compte IA** (or create a doctor manually under **IA & Médecins**) with:
+   - Email / name
+   - **Requêtes / jour** and **Requêtes / mois** limits
    - Assigned named API key
-4. The doctor gets a generated `doctor_id` and `secret`.
-5. Each AI request consumes credits based on the action cost and is blocked if the daily or monthly limit is reached.
+   - Active + IA enabled toggles
+4. Adjust usage anytime via **Modifier** (set used counts, reset day/month, change limits).
+5. The desktop app connects **automatically** after license activation — no Doctor ID / secret for the doctor to enter.
+6. Each AI request increments usage and is blocked if the daily or monthly limit is reached.
 
 ## Endpoints
 
@@ -116,7 +117,8 @@ Use header `X-Doctor-Token`.
 
 | Method | Path | Description |
 |---|---|---|
-| POST | `/api/auth/doctor` | Body `{ doctor_id, secret }`, returns `{ token }` |
+| POST | `/api/auth/cloud-session` | Desktop auto-connect: `{ activation_token, client_registration_id, device_fingerprint }` → `{ token }` |
+| POST | `/api/auth/doctor` | Legacy: `{ doctor_id, secret }` → `{ token }` (scripts/old installs) |
 | GET | `/api/me/subscription` | Current limits, usage, and assigned key status |
 | GET | `/api/me/logs` | Recent AI usage logs |
 | POST | `/api/me/ai/chat` | Calls assigned Groq/Gemini key and enforces daily/monthly limits |

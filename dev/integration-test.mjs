@@ -40,8 +40,9 @@ await adminHeaders();
 let r = await call("/api/admin/me", { headers: ADMIN });
 check("admin session valid", r.status === 200 && r.data.user?.username === "testadmin");
 
+const runId = Date.now().toString(36);
 const registration = {
-  client_registration_id: "test-client-reg-001",
+  client_registration_id: `test-client-reg-${runId}`,
   full_name: "Dr Amine Test",
   specialty: "Cardiologie",
   phone: "0550123456",
@@ -146,11 +147,22 @@ check("stats endpoint", r.status === 200 && r.data.stats?.licenses_used >= 2, JS
 
 // 19. Create cloud AI doctor from registration
 r = await call(`/api/admin/registrations/${regId}/create-cloud-doctor`, { method: "POST", headers: ADMIN, body: {} });
-check("cloud AI doctor created from registration", r.status === 201 && Boolean(r.data.doctor?.secret), JSON.stringify(r.data));
+check("cloud AI doctor created from registration", r.status === 201 && Boolean(r.data.doctor?.doctor_id), JSON.stringify(r.data));
 r = await call(`/api/admin/registrations/${regId}/create-cloud-doctor`, { method: "POST", headers: ADMIN, body: {} });
 check("second cloud doctor link refused", r.status === 409);
 
-// 20. Used license cannot be deleted
+// 20. Cloud session from activation proof (desktop auto-connect)
+r = await call("/api/auth/cloud-session", {
+  method: "POST",
+  body: {
+    activation_token: activationToken,
+    client_registration_id: registration.client_registration_id,
+    device_fingerprint: registration.device_fingerprint,
+  },
+});
+check("cloud session from activation", r.status === 200 && Boolean(r.data.token), JSON.stringify(r.data));
+
+// 21. Used license cannot be deleted
 r = await call("/api/admin/licenses", { headers: ADMIN });
 const usedLicense = (r.data.rows || []).find((row) => row.status === "used");
 r = await call(`/api/admin/licenses/${usedLicense.id}`, { method: "DELETE", headers: ADMIN });
