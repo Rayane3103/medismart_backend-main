@@ -199,10 +199,10 @@ export const ADMIN_HTML = `<!doctype html>
   <dialog class="modal" id="serialDialog">
     <div class="modal-card">
       <header class="modal-head">
-        <div><p class="kicker">Clé générée</p><h2>Copiez la clé maintenant</h2></div>
+        <div><p class="kicker">Clé générée</p><h2>Clé d'activation créée</h2></div>
         <button class="icon-close" type="button" data-close-dialog="serialDialog" aria-label="Fermer">×</button>
       </header>
-      <div class="alert alert--warn">Cette clé ne sera affichée qu'une seule fois. Envoyez-la au médecin par email ou téléphone.</div>
+      <div class="alert alert--ok">La clé est enregistrée et reste visible dans l'onglet Licences.</div>
       <div class="copy-row">
         <input id="generatedSerialKey" readonly class="serial-input">
         <button class="btn ghost" type="button" data-copy="generatedSerialKey">Copier</button>
@@ -210,6 +210,32 @@ export const ADMIN_HTML = `<!doctype html>
       <p class="subtle" id="generatedSerialMeta"></p>
       <footer class="modal-foot"><button class="btn primary" type="button" data-close-dialog="serialDialog">Terminé</button></footer>
     </div>
+  </dialog>
+
+  <dialog class="modal" id="licenseEditDialog">
+    <form class="modal-card" id="licenseEditForm">
+      <header class="modal-head">
+        <div><p class="kicker">Licence</p><h2>Modifier la licence</h2></div>
+        <button class="icon-close" type="button" data-close-dialog="licenseEditDialog" aria-label="Fermer">×</button>
+      </header>
+      <input id="licenseEditId" type="hidden">
+      <div class="form-grid">
+        <label class="full"><span>Clé d'activation</span>
+          <div class="copy-row">
+            <input id="licenseEditSerial" readonly class="serial-input">
+            <button class="btn ghost" type="button" data-copy="licenseEditSerial">Copier</button>
+          </div>
+        </label>
+        <label><span>Statut</span><input id="licenseEditStatus" readonly></label>
+        <label><span>Expire le</span><input id="licenseEditExpires" readonly placeholder="—"></label>
+        <label><span>Médecin / inscription</span><select id="licenseEditRegistration"><option value="">Non liée (tout compte)</option></select></label>
+        <label><span>Type de licence</span><select id="licenseEditType"><option value="lifetime">À vie</option><option value="trial">Essai gratuit</option></select></label>
+        <label class="hidden" id="licenseEditTrialWrap"><span>Durée de l'essai (jours)</span><input id="licenseEditTrialDays" type="number" min="1" max="3650"></label>
+        <label class="full"><span>Note (optionnel)</span><input id="licenseEditNote" placeholder="Réf. paiement, remarque…"></label>
+      </div>
+      <p class="subtle">Après modification (ex. essai → à vie), le médecin peut ressaisir la même clé dans Configuration → Activation pour mettre à jour l'application.</p>
+      <footer class="modal-foot"><button class="btn ghost" type="button" data-close-dialog="licenseEditDialog">Annuler</button><button class="btn primary" type="submit">Enregistrer</button></footer>
+    </form>
   </dialog>
 
   <dialog class="modal" id="keyDialog">
@@ -464,12 +490,14 @@ input:focus, select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px 
 .kicker { margin: 0; font-size: 11px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; color: var(--primary); }
 .icon-close { width: 36px; height: 36px; border: 0; border-radius: 10px; background: #f1f5f9; cursor: pointer; font-size: 22px; line-height: 1; color: var(--muted); }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 14px; }
+.form-grid .full { grid-column: 1 / -1; }
 .checks { display: flex; flex-wrap: wrap; gap: 14px; margin: 14px 0; }
 .check { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; color: var(--text); }
 .check input { width: 16px; height: 16px; min-height: 16px; }
 .modal-foot { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--line); }
 .alert { padding: 12px 14px; border-radius: 10px; font-size: 13px; line-height: 1.45; margin-bottom: 14px; }
 .alert--warn { background: var(--warning-bg); color: #92400e; border: 1px solid #fde68a; }
+.alert--ok { background: #ecfdf5; color: #166534; border: 1px solid #bbf7d0; }
 .copy-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; margin-bottom: 10px; }
 .subtle { color: var(--muted); font-size: 12.5px; line-height: 1.45; }
 .logs-list { display: grid; gap: 8px; max-height: 60vh; overflow: auto; }
@@ -507,7 +535,7 @@ export const ADMIN_JS = `(function () {
     registrations: [], licenses: [], stats: {},
     regQuery: "", regStatusFilter: "all",
     licenseQuery: "", licenseStatusFilter: "all",
-    editingDoctorId: "", editingKeyId: "",
+    editingDoctorId: "", editingKeyId: "", editingLicenseId: "",
     pendingCloudDoctorRegistrationId: ""
   };
 
@@ -742,9 +770,14 @@ export const ADMIN_JS = `(function () {
     var q = state.licenseQuery.trim().toLowerCase();
     return state.licenses.filter(function (r) {
       var ok = state.licenseStatusFilter === "all" || r.status === state.licenseStatusFilter;
-      var hay = [r.key_hint, r.registration_name, r.note, r.license_type].join(" ").toLowerCase();
+      var hay = [r.serial_key, r.key_hint, r.registration_name, r.note, r.license_type].join(" ").toLowerCase();
       return ok && (!q || hay.indexOf(q) !== -1);
     });
+  }
+
+  function formatLicenseDate(value) {
+    if (!value) return "—";
+    return String(value).replace("T", " ").replace("+01:00", "").slice(0, 16);
   }
 
   function renderLicenses() {
@@ -754,11 +787,21 @@ export const ADMIN_JS = `(function () {
     var html = rows.map(function (r) {
       var typeBadge = r.license_type === "trial" ? badge("amber", "Essai " + (r.trial_days || "?") + "j") : badge("violet", "À vie");
       var stCls = r.status === "used" ? "green" : r.status === "revoked" ? "red" : "blue";
-      return '<tr><td><div class="serial-input" style="font-size:14px">' + escapeHtml(r.key_hint || "") + '</div><div class="cell-sub">' + escapeHtml(r.note || "") + '</div></td>' +
+      var keyDisplay = r.serial_key || r.key_hint || "—";
+      var expiryLine = r.license_type === "lifetime"
+        ? '<div class="cell-sub">Validité : illimitée</div>'
+        : (r.expires_at ? '<div class="cell-sub">Expire : ' + escapeHtml(formatLicenseDate(r.expires_at)) + '</div>' : "");
+      return '<tr><td><div class="serial-input" style="font-size:14px">' + escapeHtml(keyDisplay) + '</div>' +
+        (!r.serial_key && r.key_hint ? '<div class="cell-sub">Indice seulement (clé non archivée)</div>' : '') +
+        '<div class="cell-sub">' + escapeHtml(r.note || "") + '</div></td>' +
         '<td>' + typeBadge + badge(stCls, LIC_STATUS[r.status] || r.status) + '</td>' +
         '<td><div class="cell-sub">' + escapeHtml(r.registration_name || "Non liée") + '</div></td>' +
-        '<td><div class="cell-sub">Créée : ' + escapeHtml((r.created_at || "").slice(0,10)) + '</div>' + (r.used_at ? '<div class="cell-sub">Utilisée : ' + escapeHtml(r.used_at.replace("T"," ").slice(0,16)) + '</div>' : "") + '</td>' +
+        '<td><div class="cell-sub">Créée : ' + escapeHtml((r.created_at || "").slice(0,10)) + '</div>' +
+        (r.used_at ? '<div class="cell-sub">Utilisée : ' + escapeHtml(formatLicenseDate(r.used_at)) + '</div>' : "") +
+        expiryLine + '</td>' +
         '<td class="row-actions">' +
+          (keyDisplay !== "—" ? '<button class="btn ghost" type="button" data-action="license-copy" data-id="' + escapeHtml(r.id) + '">Copier</button>' : "") +
+          (r.status !== "revoked" ? '<button class="btn ghost" type="button" data-action="license-edit" data-id="' + escapeHtml(r.id) + '">Modifier</button>' : "") +
           (r.status !== "revoked" ? '<button class="btn danger" type="button" data-action="license-revoke" data-id="' + escapeHtml(r.id) + '">Révoquer</button>' : "") +
           (r.status === "generated" ? '<button class="btn danger" type="button" data-action="license-delete" data-id="' + escapeHtml(r.id) + '">Supprimer</button>' : "") +
         '</td></tr>';
@@ -769,6 +812,7 @@ export const ADMIN_JS = `(function () {
   function findKey(id) { return state.apiKeys.find(function (k) { return k.id === id; }); }
   function findDoctor(id) { return state.rows.find(function (r) { return r.doctor_id === id; }); }
   function findRegistration(id) { return state.registrations.find(function (r) { return r.id === id; }); }
+  function findLicense(id) { return state.licenses.find(function (r) { return r.id === id; }); }
 
   function openCloudDoctorDialog(regId) {
     var reg = findRegistration(regId);
@@ -818,12 +862,7 @@ export const ADMIN_JS = `(function () {
 
   function openLicenseDialog(regId) {
     el.licenseForm.reset();
-    var html = '<option value="">Non liée (tout compte)</option>';
-    state.registrations.forEach(function (r) {
-      html += '<option value="' + escapeHtml(r.id) + '">' + escapeHtml((r.full_name || "?") + (r.specialty ? " — " + r.specialty : "")) + '</option>';
-    });
-    el.licenseRegistration.innerHTML = html;
-    el.licenseRegistration.value = regId || "";
+    fillLicenseRegistrationSelect(el.licenseRegistration, regId || "");
     el.licenseType.value = "lifetime";
     syncTrialDays();
     el.licenseDialog.showModal();
@@ -834,6 +873,73 @@ export const ADMIN_JS = `(function () {
     el.trialDaysWrap.classList.toggle("hidden", !trial);
     el.licenseTrialDays.required = trial;
     if (trial && !el.licenseTrialDays.value) el.licenseTrialDays.value = "7";
+  }
+
+  function syncEditTrialDays() {
+    var trial = el.licenseEditType.value === "trial";
+    el.licenseEditTrialWrap.classList.toggle("hidden", !trial);
+    el.licenseEditTrialDays.required = trial;
+  }
+
+  function fillLicenseRegistrationSelect(selectEl, selectedId) {
+    var html = '<option value="">Non liée (tout compte)</option>';
+    state.registrations.forEach(function (r) {
+      html += '<option value="' + escapeHtml(r.id) + '">' + escapeHtml((r.full_name || "?") + (r.specialty ? " — " + r.specialty : "")) + '</option>';
+    });
+    selectEl.innerHTML = html;
+    selectEl.value = selectedId || "";
+  }
+
+  function openLicenseEditDialog(id) {
+    var lic = findLicense(id);
+    if (!lic) { showToast("Licence introuvable", true); return; }
+    state.editingLicenseId = id;
+    el.licenseEditId.value = lic.id;
+    el.licenseEditSerial.value = lic.serial_key || lic.key_hint || "";
+    el.licenseEditStatus.value = LIC_STATUS[lic.status] || lic.status || "";
+    el.licenseEditExpires.value = lic.license_type === "lifetime"
+      ? "Illimitée"
+      : formatLicenseDate(lic.expires_at);
+    fillLicenseRegistrationSelect(el.licenseEditRegistration, lic.registration_id || "");
+    el.licenseEditType.value = lic.license_type === "trial" ? "trial" : "lifetime";
+    el.licenseEditTrialDays.value = lic.trial_days || 7;
+    el.licenseEditNote.value = lic.note || "";
+    syncEditTrialDays();
+    el.licenseEditDialog.showModal();
+  }
+
+  async function saveLicenseEdit(e) {
+    e.preventDefault();
+    var id = state.editingLicenseId || el.licenseEditId.value;
+    if (!id) return;
+    var btn = el.licenseEditForm.querySelector('button[type="submit"]');
+    setBusy(btn, true);
+    try {
+      var body = {
+        license_type: el.licenseEditType.value,
+        registration_id: el.licenseEditRegistration.value,
+        note: el.licenseEditNote.value.trim(),
+      };
+      if (body.license_type === "trial") {
+        body.trial_days = parseInt(el.licenseEditTrialDays.value, 10) || 0;
+      }
+      var result = await apiFetch("/api/admin/licenses/" + encodeURIComponent(id), { method: "PATCH", body: body });
+      el.licenseEditDialog.close();
+      state.editingLicenseId = "";
+      await loadData();
+      var lic = result.license || {};
+      var msg = lic.license_type === "lifetime"
+        ? "Licence mise à jour — à vie"
+        : "Licence mise à jour — essai " + (lic.trial_days || "?") + " jours";
+      showToast(msg);
+    } catch (err) { showToast(err.message, true); }
+    finally { setBusy(btn, false); }
+  }
+
+  function copyLicenseKey(id) {
+    var lic = findLicense(id);
+    if (!lic) return;
+    copyText(lic.serial_key || lic.key_hint || "");
   }
 
   async function saveLicense(e) {
@@ -1010,11 +1116,13 @@ export const ADMIN_JS = `(function () {
     el.newKeyButton.addEventListener("click", function () { openKeyDialog(null); });
     el.newDoctorButton.addEventListener("click", function () { openDoctorDialog(null); });
     el.licenseForm.addEventListener("submit", saveLicense);
+    el.licenseEditForm.addEventListener("submit", saveLicenseEdit);
     el.keyForm.addEventListener("submit", saveKey);
     el.doctorForm.addEventListener("submit", saveDoctor);
     el.cloudDoctorSubmit.addEventListener("click", function () { submitCloudDoctor(false); });
     el.cloudDoctorSkip.addEventListener("click", function () { submitCloudDoctor(true); });
     el.licenseType.addEventListener("change", syncTrialDays);
+    el.licenseEditType.addEventListener("change", syncEditTrialDays);
     el.keyProvider.addEventListener("change", function () { if (!state.editingKeyId) el.keyModel.value = defaultModel(el.keyProvider.value); });
     el.regSearchInput.addEventListener("input", function () { state.regQuery = el.regSearchInput.value; renderRegistrations(); });
     el.regStatusFilter.addEventListener("change", function () { state.regStatusFilter = el.regStatusFilter.value; renderRegistrations(); });
@@ -1023,7 +1131,7 @@ export const ADMIN_JS = `(function () {
     el.searchInput.addEventListener("input", function () { state.query = el.searchInput.value; renderDoctors(); });
     el.keyFilter.addEventListener("change", function () { state.keyFilter = el.keyFilter.value; renderDoctors(); });
     el.regRows.addEventListener("click", function (e) { handleTableClick(e, { "reg-generate": openLicenseDialog, "reg-cloud-doctor": createCloudDoctor, "reg-delete": deleteRegistration }); });
-    el.licenseRows.addEventListener("click", function (e) { handleTableClick(e, { "license-revoke": revokeLicense, "license-delete": deleteLicense }); });
+    el.licenseRows.addEventListener("click", function (e) { handleTableClick(e, { "license-copy": copyLicenseKey, "license-edit": openLicenseEditDialog, "license-revoke": revokeLicense, "license-delete": deleteLicense }); });
     el.keyRows.addEventListener("click", function (e) { handleTableClick(e, { "edit-key": function (id) { openKeyDialog(findKey(id)); }, "delete-key": deleteKey }); });
     el.doctorRows.addEventListener("click", function (e) { handleTableClick(e, { "edit-doctor": function (id) { openDoctorDialog(findDoctor(id)); }, "logs": openLogs, "delete-doctor": deleteDoctor }); });
     document.addEventListener("click", function (e) {
@@ -1041,6 +1149,7 @@ export const ADMIN_JS = `(function () {
      "licenseSearchInput","licenseStatusFilter","licenseCount","licenseRows","newLicenseButtonAlt",
      "newKeyButton","newDoctorButton","keyCount","keyRows","searchInput","keyFilter","doctorCount","doctorRows",
      "licenseDialog","licenseForm","licenseRegistration","licenseType","trialDaysWrap","licenseTrialDays","licenseNote",
+     "licenseEditDialog","licenseEditForm","licenseEditId","licenseEditSerial","licenseEditStatus","licenseEditExpires","licenseEditRegistration","licenseEditType","licenseEditTrialWrap","licenseEditTrialDays","licenseEditNote",
      "serialDialog","generatedSerialKey","generatedSerialMeta",
      "keyDialog","keyForm","keyDialogMode","keyDialogTitle","keyId","keyName","keyProvider","keyModel","keySecret","keyActive","clearKeyWrap","clearKeySecret",
      "doctorDialog","doctorForm","doctorDialogMode","doctorDialogTitle","doctorId","doctorEmail","doctorAssignedKey","doctorMonthlyLimit","doctorDailyLimit","doctorActive","doctorAiEnabled","doctorUsageTools","setMonthlyUsed","setDailyUsed","resetMonthly","resetDaily",

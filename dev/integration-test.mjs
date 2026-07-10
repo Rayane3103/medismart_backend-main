@@ -80,8 +80,9 @@ check("admin route rejects missing session", r.status === 401);
 // 6. Generate trial license (7 days) linked to the registration
 r = await call("/api/admin/licenses", { method: "POST", headers: ADMIN, body: { license_type: "trial", trial_days: 7, registration_id: regId } });
 const trialKey = r.data.serial_key;
+const trialLicenseId = r.data.license?.id;
 check("trial license generated", r.status === 201 && /^MEDI(-[A-Z0-9]{4}){4}$/.test(trialKey || ""), JSON.stringify(r.data));
-check("license stored hashed (hint only)", r.data.license?.key_hint?.includes("****"));
+check("license serial stored for admin", r.data.license?.serial_key === trialKey && r.data.license?.key_hint?.includes("****"));
 
 // 7. Trial days required for trial type
 r = await call("/api/admin/licenses", { method: "POST", headers: ADMIN, body: { license_type: "trial" } });
@@ -101,6 +102,14 @@ const activationToken = r.data.activation_token;
 check("activation succeeds", r.status === 200 && Boolean(activationToken), JSON.stringify(r.data));
 check("trial expiry returned", r.status === 200 && r.data.license?.license_type === "trial" && Boolean(r.data.license?.expires_at));
 check("trial calendar midnight expiry", String(r.data.license?.expires_at || "").includes("T00:00:00+01:00"), r.data.license?.expires_at);
+
+// 10b. Admin can list full keys and upgrade trial -> lifetime on same license
+r = await call("/api/admin/licenses", { headers: ADMIN });
+check("admin license list includes serial_key", r.status === 200 && (r.data.rows || []).some((row) => row.serial_key === trialKey));
+r = await call(`/api/admin/licenses/${trialLicenseId}`, { method: "PATCH", headers: ADMIN, body: { license_type: "lifetime" } });
+check("admin patch trial to lifetime", r.status === 200 && r.data.license?.license_type === "lifetime" && r.data.license?.expires_at === null);
+r = await call("/api/activation/activate", { method: "POST", body: { ...registration, serial_key: trialKey } });
+check("same key works after lifetime upgrade", r.status === 200 && r.data.license?.license_type === "lifetime" && r.data.license?.expires_at === null);
 
 // 11. Token verifies
 r = await call("/api/activation/verify", { method: "POST", body: { activation_token: activationToken } });

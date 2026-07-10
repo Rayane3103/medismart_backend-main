@@ -6,7 +6,7 @@
 //   registration:{id}                  registration JSON
 //   registration:client:{clientId}     registration id (idempotent sync lookup)
 //   licenses:index                     set of license ids
-//   license:{id}                       license JSON (key stored hashed only)
+//   license:{id}                       license JSON (key stored hashed + serial_key for admin)
 //   license:hash:{sha256}              license id (O(1) activation lookup)
 //   license:signing_secret             HMAC secret (unless LICENSE_SIGNING_SECRET env)
 
@@ -183,6 +183,7 @@ export function ensureLicenseDefaults(license) {
   license.id = license.id || uuid();
   license.key_hash = cleanStr(license.key_hash, 64);
   license.key_hint = cleanStr(license.key_hint, 40);
+  license.serial_key = cleanStr(license.serial_key, 30);
   if (!LICENSE_TYPES.includes(license.license_type)) license.license_type = "lifetime";
   license.trial_days = license.license_type === "trial"
     ? Math.max(1, parseInt(license.trial_days, 10) || 7)
@@ -246,6 +247,81 @@ function publicLicenseState(license, registration = null) {
     created_at: license.created_at,
     updated_at: license.updated_at,
   };
+}
+
+/** Admin-only view: includes the full serial key (private admin panel). */
+export function adminLicenseState(license, registration = null) {
+  return {
+    ...publicLicenseState(license, registration),
+    serial_key: license.serial_key || "",
+  };
+}
+
+export function recomputeLicenseExpiry(license) {
+  const row = ensureLicenseDefaults({ ...license });
+  if (row.license_type !== "trial") {
+    if (row.used_at || row.starts_at) row.starts_at = row.starts_at || row.used_at;
+    row.expires_at = null;
+    return row;
+  }
+  const anchor = row.used_at || row.starts_at;
+  if (anchor) {
+    const expiry = computeExpiry(row, anchor);
+    row.starts_at = expiry.starts_at;
+    row.expires_at = expiry.expires_at;
+  } else {
+    row.starts_at = null;
+    row.expires_at = null;
+  }
+  return row;
+}
+
+export async function updateAdminLicense(id, body) {
+  const stored = await getLicense(id);
+  if (!stored) return { error: "Licence introuvable", status: 404 };
+
+  const license = ensureLicenseDefaults({ ...stored });
+  if (license.status === "revoked") {
+    return { error: "Licence révoquée. Générez une nouvelle clé si nécessaire.", status: 409 };
+  }
+
+  if (body.license_type && LICENSE_TYPES.includes(body.license_type)) {
+    license.license_type = body.license_type;
+  }
+
+  if (license.license_type === "trial") {
+    if (body.trial_days !== undefined) {
+      const trialDays = parseInt(body.trial_days, 10);
+      if (!Number.isFinite(trialDays) || trialDays < 1 || trialDays > 3650) {
+        return { error: "trial_days invalide (1 à 3650)", status: 400 };
+      }
+      license.trial_days = trialDays;
+    }
+  } else {
+    license.trial_days = null;
+  }
+
+  if (body.note !== undefined) license.note = cleanStr(body.note, 300);
+
+  if (body.registration_id !== undefined) {
+    const regId = cleanStr(body.registration_id, 100);
+    if (regId) {
+      const reg = await getRegistration(regId);
+      if (!reg) return { error: "Inscription introuvable", status: 404 };
+      license.registration_id = reg.id;
+    } else {
+      license.registration_id = "";
+    }
+  }
+
+  const updated = recomputeLicenseExpiry(license);
+  await saveLicense(updated);
+
+  let registration = null;
+  if (updated.registration_id) {
+    registration = await getRegistration(updated.registration_id);
+  }
+  return { license: adminLicenseState(updated, registration) };
 }
 
 // Trials use calendar days in Algeria (Africa/Algiers, UTC+1).
@@ -518,13 +594,13 @@ export async function handleLicensingAdminRoutes(req, res, path, ctx) {
     const registrations = await listRegistrations();
     const regMap = Object.fromEntries(registrations.map((r) => [r.id, r]));
     ok(res, {
-      rows: licenses.map((license) => publicLicenseState(license, regMap[license.registration_id] || null)),
+      rows: licenses.map((license) => adminLicenseState(license, regMap[license.registration_id] || null)),
       stats: await licensingStats(),
     });
     return true;
   }
 
-  // Generate a new serial key. The raw key is returned exactly once.
+  // Generate a new serial key (stored for admin recall; hash used for activation lookup).
   if (path === "/api/admin/licenses" && req.method === "POST") {
     const body = await readJson(req);
     const licenseType = LICENSE_TYPES.includes(body.license_type) ? body.license_type : null;
@@ -558,6 +634,7 @@ export async function handleLicensingAdminRoutes(req, res, path, ctx) {
       id: uuid(),
       key_hash: hashSerialKey(rawKey),
       key_hint: serialKeyHint(rawKey),
+      serial_key: rawKey,
       license_type: licenseType,
       trial_days: trialDays,
       status: "generated",
@@ -569,9 +646,21 @@ export async function handleLicensingAdminRoutes(req, res, path, ctx) {
 
     ok(res, {
       ok: true,
-      serial_key: rawKey, // shown once, never stored raw
-      license: publicLicenseState(license, registration),
+      serial_key: rawKey,
+      license: adminLicenseState(license, registration),
     }, 201);
+    return true;
+  }
+
+  const licensePatchMatch = path.match(/^\/api\/admin\/licenses\/([a-f0-9-]+)$/);
+  if (licensePatchMatch && req.method === "PATCH") {
+    const body = await readJson(req);
+    const result = await updateAdminLicense(licensePatchMatch[1], body);
+    if (result.error) {
+      err(res, result.status || 400, result.error);
+      return true;
+    }
+    ok(res, { ok: true, license: result.license });
     return true;
   }
 
@@ -583,7 +672,7 @@ export async function handleLicensingAdminRoutes(req, res, path, ctx) {
     license.status = "revoked";
     license.revoked_at = nowIso();
     await saveLicense(license);
-    ok(res, { ok: true, license: publicLicenseState(license) });
+    ok(res, { ok: true, license: adminLicenseState(license) });
     return true;
   }
 
