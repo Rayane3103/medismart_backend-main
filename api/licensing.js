@@ -10,10 +10,8 @@
 //   license:hash:{sha256}              license id (O(1) activation lookup)
 //   license:signing_secret             HMAC secret (unless LICENSE_SIGNING_SECRET env)
 
-import { Redis } from "@upstash/redis";
 import crypto from "node:crypto";
-
-const redis = Redis.fromEnv();
+import { redis } from "./redis.js";
 
 export const LICENSE_TYPES = ["trial", "lifetime"];
 export const LICENSE_STATUSES = ["generated", "used", "revoked"];

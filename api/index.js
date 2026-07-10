@@ -1,8 +1,8 @@
 // MediSmart AI Credits API - Single Render/Vercel-compatible Node handler.
 // Handles the admin panel, doctor auth, usage limits, and Groq/Gemini proxying.
 
-import { Redis } from "@upstash/redis";
 import crypto from "node:crypto";
+import { redis } from "./redis.js";
 import { ADMIN_CSS, ADMIN_HTML, ADMIN_JS } from "./admin-ui.js";
 import {
   handleLicensingPublicRoutes,
@@ -11,8 +11,6 @@ import {
   saveRegistration,
   ensureRegistrationDefaults,
 } from "./licensing.js";
-
-const redis = Redis.fromEnv();
 
 const AI_PROVIDERS = {
   groq: {
