@@ -50,15 +50,27 @@ export const ADMIN_HTML = `<!doctype html>
         </div>
       </div>
       <nav class="sidebar-nav" id="sidebarNav">
-        <button type="button" class="nav-item active" data-view="dashboard"><span class="nav-icon">◉</span> Tableau de bord</button>
-        <button type="button" class="nav-item" data-view="registrations"><span class="nav-icon">◎</span> Inscriptions</button>
-        <button type="button" class="nav-item" data-view="licenses"><span class="nav-icon">⬡</span> Licences</button>
-        <button type="button" class="nav-item" data-view="ai"><span class="nav-icon">◈</span> IA &amp; Médecins</button>
+        <button type="button" class="nav-item active" data-view="dashboard">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg>
+          <span>Tableau de bord</span>
+        </button>
+        <button type="button" class="nav-item" data-view="registrations">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+          <span>Inscriptions</span>
+        </button>
+        <button type="button" class="nav-item" data-view="licenses">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+          <span>Licences</span>
+        </button>
+        <button type="button" class="nav-item" data-view="ai">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a4 4 0 0 1 4 4c0 1.95-1.4 3.58-3.25 3.93L12 22l-.75-12.07A4.001 4.001 0 0 1 12 2z"/><path d="M8 6H4a2 2 0 0 0-2 2v1"/><path d="M16 6h4a2 2 0 0 1 2 2v1"/></svg>
+          <span>IA &amp; Médecins</span>
+        </button>
       </nav>
       <div class="sidebar-foot">
         <div class="sidebar-user">
           <span class="user-avatar" id="userAvatar">A</span>
-          <div>
+          <div class="sidebar-user-text">
             <strong id="userDisplayName">Admin</strong>
             <small>Administrateur</small>
           </div>
@@ -283,8 +295,7 @@ export const ADMIN_CSS = `:root {
   --primary: #2563eb;
   --primary-hover: #1d4ed8;
   --primary-light: #eff6ff;
-  --sidebar: #152347;
-  --sidebar-hover: #1e3a6e;
+  --bg-sidebar: linear-gradient(180deg, #1e3a8a 0%, #1d4ed8 100%);
   --success: #10b981;
   --success-bg: #ecfdf5;
   --warning: #f59e0b;
@@ -311,10 +322,10 @@ button, input, select { font: inherit; }
 .login-screen { min-height: 100vh; display: grid; place-items: center; padding: 24px; position: relative; }
 .login-bg { position: fixed; inset: 0; background: linear-gradient(135deg, #eff6ff 0%, #f8fafc 45%, #eef2ff 100%); z-index: 0; }
 .login-card { position: relative; z-index: 1; width: min(420px, 100%); background: var(--card); border: 1px solid var(--line); border-radius: 20px; padding: 36px 32px 28px; box-shadow: var(--shadow); }
-.login-brand { display: flex; align-items: center; gap: 14px; margin-bottom: 22px; }
-.login-logo { width: 52px; height: 52px; border-radius: 14px; object-fit: cover; box-shadow: 0 8px 20px rgba(37,99,235,.18); }
-.login-brand strong { display: block; font-size: 18px; letter-spacing: -.02em; }
-.login-brand span { color: var(--muted); font-size: 12px; font-weight: 500; }
+.login-brand { display: flex; align-items: center; gap: 12px; margin-bottom: 22px; }
+.login-logo { width: 48px; height: 48px; border-radius: 8px; object-fit: cover; background: #fff; box-shadow: 0 12px 28px rgba(0,0,0,.18); flex-shrink: 0; }
+.login-brand strong { display: block; font-size: 16px; font-weight: 800; letter-spacing: -.01em; }
+.login-brand span { color: var(--muted); font-size: 11px; font-weight: 500; }
 .login-card h1 { margin: 0 0 8px; font-size: 24px; letter-spacing: -.02em; }
 .login-sub { margin: 0 0 22px; color: var(--muted); font-size: 14px; line-height: 1.5; }
 .login-form { display: grid; gap: 14px; }
@@ -326,23 +337,24 @@ button, input, select { font: inherit; }
 .login-form button:disabled { opacity: .6; cursor: wait; }
 .login-foot { margin: 18px 0 0; text-align: center; font-size: 12px; color: var(--muted); }
 
-/* Shell */
-.app-shell { display: grid; grid-template-columns: 260px 1fr; min-height: 100vh; }
-.sidebar { background: var(--sidebar); color: #e2e8f0; display: flex; flex-direction: column; padding: 20px 14px; position: sticky; top: 0; height: 100vh; }
-.sidebar-brand { display: flex; align-items: center; gap: 12px; padding: 8px 10px 20px; border-bottom: 1px solid rgba(255,255,255,.08); margin-bottom: 16px; }
-.sidebar-logo { width: 40px; height: 40px; border-radius: 10px; object-fit: cover; }
-.sidebar-brand strong { display: block; color: #fff; font-size: 14px; }
-.sidebar-brand small { color: #94a3b8; font-size: 10px; }
-.sidebar-nav { display: grid; gap: 6px; flex: 1; }
-.nav-item { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 14px; border: 0; border-radius: 10px; background: transparent; color: #cbd5e1; font-weight: 600; font-size: 13.5px; cursor: pointer; text-align: left; }
-.nav-item:hover { background: var(--sidebar-hover); color: #fff; }
-.nav-item.active { background: linear-gradient(90deg, rgba(37,99,235,.35), rgba(37,99,235,.12)); color: #fff; box-shadow: inset 3px 0 0 #60a5fa; }
-.nav-icon { opacity: .85; font-size: 12px; }
-.sidebar-foot { border-top: 1px solid rgba(255,255,255,.08); padding-top: 14px; }
-.sidebar-user { display: flex; align-items: center; gap: 10px; padding: 8px 10px; }
-.user-avatar { width: 36px; height: 36px; border-radius: 10px; background: var(--primary); color: #fff; display: grid; place-items: center; font-weight: 800; font-size: 14px; }
-.sidebar-user strong { display: block; color: #fff; font-size: 13px; }
-.sidebar-user small { color: #94a3b8; font-size: 11px; }
+/* Shell — matches desktop nav-sidebar */
+.app-shell { display: grid; grid-template-columns: 224px 1fr; min-height: 100vh; }
+.sidebar { background: var(--bg-sidebar); color: #e2e8f0; display: flex; flex-direction: column; position: sticky; top: 0; height: 100vh; border-right: 1px solid rgba(255,255,255,.08); }
+.sidebar-brand { display: flex; align-items: center; gap: 10px; height: 58px; padding: 0 16px; border-bottom: 1px solid rgba(255,255,255,.08); flex-shrink: 0; }
+.sidebar-logo { width: 32px; height: 32px; border-radius: 8px; object-fit: cover; flex-shrink: 0; box-shadow: 0 6px 14px rgba(37,99,235,.18); }
+.sidebar-brand strong { display: block; color: #fff; font-size: 13px; font-weight: 800; letter-spacing: -.01em; line-height: 1.2; }
+.sidebar-brand small { color: rgba(255,255,255,.6); font-size: 9.5px; font-weight: 500; }
+.sidebar-nav { display: flex; flex-direction: column; gap: 4px; flex: 1; padding: 16px 10px; overflow-y: auto; }
+.nav-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 12px; border: 0; border-radius: 10px; background: transparent; color: rgba(255,255,255,.78); font-weight: 500; font-size: 13px; cursor: pointer; text-align: left; transition: background .15s, color .15s; }
+.nav-item:hover { background: rgba(255,255,255,.1); color: #fff; }
+.nav-item.active { background: #fff; color: #1e40af; font-weight: 600; box-shadow: 0 8px 20px rgba(0,0,0,.18); }
+.nav-item.active .nav-icon { color: #2563eb; opacity: 1; }
+.nav-icon { width: 18px; height: 18px; flex-shrink: 0; opacity: .85; stroke: currentColor; }
+.sidebar-foot { border-top: 1px solid rgba(255,255,255,.08); padding: 12px 14px; flex-shrink: 0; }
+.sidebar-user { display: flex; align-items: center; gap: 10px; }
+.user-avatar { width: 30px; height: 30px; border-radius: 8px; background: rgba(255,255,255,.15); color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 12px; flex-shrink: 0; }
+.sidebar-user-text strong { display: block; color: #fff; font-size: 12px; font-weight: 600; }
+.sidebar-user-text small { color: rgba(255,255,255,.55); font-size: 10px; }
 
 .main-wrap { min-width: 0; display: flex; flex-direction: column; }
 .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 22px 28px 12px; background: var(--card); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; }
@@ -436,7 +448,8 @@ input:focus, select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px 
 @media (max-width: 960px) {
   .app-shell { grid-template-columns: 1fr; }
   .sidebar { position: relative; height: auto; }
-  .sidebar-nav { grid-template-columns: repeat(2, minmax(0,1fr)); }
+  .sidebar-nav { flex-direction: row; flex-wrap: wrap; padding: 10px; }
+  .nav-item { width: auto; flex: 1 1 calc(50% - 8px); min-width: 140px; }
   .form-grid { grid-template-columns: 1fr; }
   .log-row { grid-template-columns: 1fr; }
 }
