@@ -1,0 +1,143 @@
+# MediSmart AI Backend
+
+Cloud backend for MediSmart Pro. It provides:
+
+- Super admin panel at `/admin` (Dashboard, Registrations, Licenses, AI doctors & keys)
+- Doctor registration sync from the desktop app (offline-first registrations)
+- Serial key / license management: one-time keys `MEDI-XXXX-XXXX-XXXX-XXXX`,
+  trial (N days) or lifetime, stored hashed, revocable
+- Activation endpoint returning an HMAC-signed activation token for the desktop app
+- Named Groq/Gemini API keys managed in the admin panel
+- Doctor accounts with email, daily usage limit, monthly usage limit, and one assigned named API key
+- Usage tracking and enforcement before every AI call
+- Upstash Redis storage for accounts, keys, usage, and logs
+
+Provider secrets are not fixed in code and are not stored in Render/Vercel environment variables. Add them from the admin panel, name them, then assign a named key to each doctor.
+
+## Environment Variables
+
+Required:
+
+```txt
+UPSTASH_REDIS_REST_URL
+UPSTASH_REDIS_REST_TOKEN
+ADMIN_TOKEN
+```
+
+Optional model defaults:
+
+```txt
+GROQ_MODEL=llama-3.3-70b-versatile
+GEMINI_MODEL=gemini-2.5-flash
+```
+
+Recommended for licensing:
+
+```txt
+LICENSE_SIGNING_SECRET=<long random string>
+```
+
+Signs activation tokens. If unset, a random secret is generated once and stored
+in Redis (`license:signing_secret`). Set it explicitly so tokens survive a
+Redis wipe.
+
+## Local Development
+
+```bash
+npm install
+npm run dev
+```
+
+Open:
+
+```txt
+http://localhost:3000/admin
+```
+
+Use `ADMIN_TOKEN` to log in.
+
+## Render Deploy
+
+Use these settings:
+
+```txt
+Service type: Web Service
+Runtime: Node
+Build command: npm install
+Start command: npm start
+```
+
+Add the required environment variables in Render, then open:
+
+```txt
+https://your-service.onrender.com/admin
+```
+
+## Admin Flow
+
+1. Add a named API key, for example `Groq main` or `Gemini backup`.
+2. Choose the provider and model for that key.
+3. Create a doctor with:
+   - Email
+   - Monthly usage limit
+   - Daily usage limit
+   - Assigned named API key
+4. The doctor gets a generated `doctor_id` and `secret`.
+5. Each AI request consumes credits based on the action cost and is blocked if the daily or monthly limit is reached.
+
+## Endpoints
+
+### Public
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/admin` | Super admin panel |
+| GET | `/api/health` | Service info, providers, default limits |
+| GET | `/api/plans` | Provider defaults, default limits, action costs |
+| POST | `/api/registrations/sync` | Desktop app uploads an offline-created doctor registration (idempotent by `client_registration_id`) |
+| POST | `/api/activation/activate` | Body includes `serial_key` + registration fields + `device_fingerprint`; validates the key, enforces one-time use, returns a signed activation token |
+| POST | `/api/activation/verify` | Re-validates a stored activation token (revocation check) |
+
+### Doctor
+
+Use header `X-Doctor-Token`.
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/api/auth/doctor` | Body `{ doctor_id, secret }`, returns `{ token }` |
+| GET | `/api/me/subscription` | Current limits, usage, and assigned key status |
+| GET | `/api/me/logs` | Recent AI usage logs |
+| POST | `/api/me/ai/chat` | Calls assigned Groq/Gemini key and enforces daily/monthly limits |
+
+### Super Admin
+
+Use header `X-Admin-Token`.
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/admin/health` | Verify admin token |
+| GET | `/api/admin/doctors` | Doctors, named keys, action costs |
+| POST | `/api/admin/doctors` | Create doctor with email, limits, assigned key |
+| PATCH | `/api/admin/doctors/:id` | Update doctor limits, key assignment, status, or usage |
+| DELETE | `/api/admin/doctors/:id` | Delete doctor |
+| GET | `/api/admin/doctors/:id/logs` | Doctor logs |
+| GET | `/api/admin/api-keys` | List named API keys without revealing secrets |
+| POST | `/api/admin/api-keys` | Add named Groq/Gemini key |
+| PATCH | `/api/admin/api-keys/:id` | Update named key, model, provider, status, or secret |
+| DELETE | `/api/admin/api-keys/:id` | Delete named key |
+| PUT | `/api/admin/credit-costs` | Update action costs |
+| GET | `/api/admin/stats` | Licensing dashboard counters |
+| GET | `/api/admin/registrations` | List synced doctor registrations (+ linked license) |
+| DELETE | `/api/admin/registrations/:id` | Delete a registration |
+| POST | `/api/admin/registrations/:id/create-cloud-doctor` | Create a cloud AI doctor account from a registration and link them |
+| GET | `/api/admin/licenses` | List licenses (key hints only, never raw keys) |
+| POST | `/api/admin/licenses` | Generate a serial key (`license_type`: `trial`+`trial_days` or `lifetime`, optional `registration_id`, `note`). The raw key is returned once |
+| POST | `/api/admin/licenses/:id/revoke` | Revoke a license |
+| DELETE | `/api/admin/licenses/:id` | Delete an unused license |
+
+## Default Action Costs
+
+- Chat: 1
+- Lab/PDF analysis: 3
+- ECG/Image analysis: 5
+- Multimodal/IRM: 10
