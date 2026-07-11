@@ -120,6 +120,8 @@ export function ensureRegistrationDefaults(reg) {
   if (!REGISTRATION_STATUSES.includes(reg.status)) reg.status = "pending_activation";
   reg.license_id = cleanStr(reg.license_id, 100);
   reg.cloud_doctor_id = cleanStr(reg.cloud_doctor_id, 100);
+  if (!["stable", "beta", "internal"].includes(reg.update_channel)) reg.update_channel = "stable";
+  if (!Array.isArray(reg.update_skus)) reg.update_skus = [];
   if (!reg.synced_at) reg.synced_at = nowIso();
   if (!reg.created_at) reg.created_at = nowIso();
   return reg;
@@ -173,6 +175,8 @@ function publicRegistrationState(reg) {
     status: reg.status,
     license_id: reg.license_id || "",
     cloud_doctor_id: reg.cloud_doctor_id || "",
+    update_channel: reg.update_channel || "stable",
+    update_skus: Array.isArray(reg.update_skus) ? reg.update_skus : [],
     created_at: reg.created_at,
     updated_at: reg.updated_at,
   };

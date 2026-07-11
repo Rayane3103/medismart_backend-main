@@ -62,6 +62,10 @@ export const ADMIN_HTML = `<!doctype html>
           <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
           <span>Licences</span>
         </button>
+        <button type="button" class="nav-item" data-view="updates">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <span>Mises à jour</span>
+        </button>
         <button type="button" class="nav-item" data-view="ai">
           <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a4 4 0 0 1 4 4c0 1.95-1.4 3.58-3.25 3.93L12 22l-.75-12.07A4.001 4.001 0 0 1 12 2z"/><path d="M8 6H4a2 2 0 0 0-2 2v1"/><path d="M16 6h4a2 2 0 0 1 2 2v1"/></svg>
           <span>IA &amp; Médecins</span>
@@ -93,10 +97,11 @@ export const ADMIN_HTML = `<!doctype html>
       <main class="main-content">
         <div class="view" id="view-dashboard">
           <section class="stat-grid" id="licenseMetrics"></section>
+          <section class="stat-grid stat-grid--compact" id="updateMetrics"></section>
           <section class="stat-grid stat-grid--compact" id="metrics"></section>
           <section class="panel panel--hint">
             <h3>Bienvenue sur l'administration MediSmart</h3>
-            <p>Gérez les inscriptions des médecins, générez des clés d'activation (essai ou à vie), et configurez l'accès IA avec des limites de requêtes par jour et par mois.</p>
+            <p>Gérez les inscriptions, licences, mises à jour desktop (obligatoires / payantes) et l'accès IA.</p>
           </section>
         </div>
 
@@ -148,6 +153,27 @@ export const ADMIN_HTML = `<!doctype html>
               <span id="licenseCount" class="panel-count">0</span>
             </div>
             <div class="table-wrap" id="licenseRows"></div>
+          </section>
+        </div>
+
+        <div class="view hidden" id="view-updates">
+          <div class="toolbar toolbar--actions">
+            <button type="button" class="btn primary" id="newReleaseButton">+ Nouvelle release</button>
+          </div>
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Releases desktop</h2>
+              <span id="releaseCount" class="panel-count">0</span>
+            </div>
+            <div class="table-wrap" id="releaseRows"></div>
+          </section>
+          <section class="panel" style="margin-top:16px">
+            <div class="panel-head">
+              <h2>Télémétrie versions</h2>
+              <span id="telemetryCount" class="panel-count">0</span>
+            </div>
+            <p class="subtle" style="padding:0 18px 8px">Versions installées remontées par les apps (sans données cliniques).</p>
+            <div class="table-wrap" id="telemetryRows"></div>
           </section>
         </div>
 
@@ -235,6 +261,75 @@ export const ADMIN_HTML = `<!doctype html>
       </div>
       <p class="subtle">Après modification (ex. essai → à vie), le médecin peut ressaisir la même clé dans Configuration → Activation pour mettre à jour l'application.</p>
       <footer class="modal-foot"><button class="btn ghost" type="button" data-close-dialog="licenseEditDialog">Annuler</button><button class="btn primary" type="submit">Enregistrer</button></footer>
+    </form>
+  </dialog>
+
+  <dialog class="modal" id="releaseDialog">
+    <form class="modal-card" id="releaseForm">
+      <header class="modal-head">
+        <div><p class="kicker" id="releaseDialogMode">Créer</p><h2 id="releaseDialogTitle">Release desktop</h2></div>
+        <button class="icon-close" type="button" data-close-dialog="releaseDialog" aria-label="Fermer">×</button>
+      </header>
+      <input id="releaseId" type="hidden">
+      <div class="form-grid">
+        <label><span>Version (SemVer)</span><input id="releaseVersion" required placeholder="2.2.0"></label>
+        <label><span>Canal</span>
+          <select id="releaseChannel">
+            <option value="stable">stable</option>
+            <option value="beta">beta</option>
+            <option value="internal">internal</option>
+          </select>
+        </label>
+        <label><span>Type</span>
+          <select id="releaseSeverity">
+            <option value="mandatory">Obligatoire</option>
+            <option value="paid">Payante</option>
+            <option value="paid_mandatory">Payante + obligatoire</option>
+          </select>
+        </label>
+        <label><span>SKU (si payante)</span><input id="releaseSku" placeholder="premium_2026"></label>
+        <label><span>Déploiement progressif %</span><input id="releaseRollout" type="number" min="0" max="100" value="100"></label>
+        <label><span>Statut</span>
+          <select id="releaseStatus">
+            <option value="draft">Brouillon</option>
+            <option value="published">Publiée</option>
+            <option value="yanked">Retirée</option>
+          </select>
+        </label>
+        <label class="full"><span>Notes (médecin)</span><input id="releaseNotes" placeholder="Correctif sécurité, nouvelles fonctions…"></label>
+        <label class="full"><span>URL artefact</span><input id="releaseArtifactUrl" placeholder="https://github.com/.../setup.exe"></label>
+        <label class="full"><span>Signature (.sig)</span><textarea id="releaseArtifactSignature" rows="3" placeholder="Contenu du fichier .sig"></textarea></label>
+        <label><span>Risque migration</span>
+          <select id="releaseMigrationRisk">
+            <option value="low">Faible</option>
+            <option value="high">Élevé</option>
+          </select>
+        </label>
+      </div>
+      <footer class="modal-foot"><button class="btn ghost" type="button" data-close-dialog="releaseDialog">Annuler</button><button class="btn primary" type="submit">Enregistrer</button></footer>
+    </form>
+  </dialog>
+
+  <dialog class="modal" id="entitlementDialog">
+    <form class="modal-card" id="entitlementForm">
+      <header class="modal-head">
+        <div><p class="kicker">Mise à jour payante</p><h2>Activer pour ce médecin</h2></div>
+        <button class="icon-close" type="button" data-close-dialog="entitlementDialog" aria-label="Fermer">×</button>
+      </header>
+      <input id="entitlementRegId" type="hidden">
+      <p class="subtle" id="entitlementRegLabel" style="margin:0 0 12px"></p>
+      <div class="form-grid">
+        <label><span>SKU</span><input id="entitlementSku" required value="premium_2026"></label>
+        <label><span>Canal de mise à jour</span>
+          <select id="entitlementChannel">
+            <option value="stable">stable</option>
+            <option value="beta">beta</option>
+            <option value="internal">internal</option>
+          </select>
+        </label>
+        <label class="full"><span>Note (paiement hors app)</span><input id="entitlementNote" placeholder="Virement reçu le…"></label>
+      </div>
+      <footer class="modal-foot"><button class="btn ghost" type="button" data-close-dialog="entitlementDialog">Annuler</button><button class="btn primary" type="submit">Activer</button></footer>
     </form>
   </dialog>
 
@@ -499,6 +594,7 @@ input:focus, select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px 
 .alert--warn { background: var(--warning-bg); color: #92400e; border: 1px solid #fde68a; }
 .alert--ok { background: #ecfdf5; color: #166534; border: 1px solid #bbf7d0; }
 .copy-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: end; margin-bottom: 10px; }
+.form-grid textarea { width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font: inherit; resize: vertical; min-height: 72px; box-sizing: border-box; }
 .subtle { color: var(--muted); font-size: 12.5px; line-height: 1.45; }
 .logs-list { display: grid; gap: 8px; max-height: 60vh; overflow: auto; }
 .log-row { display: grid; grid-template-columns: 130px 100px 70px 1fr; gap: 10px; align-items: center; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; font-size: 12.5px; }
@@ -521,11 +617,14 @@ export const ADMIN_JS = `(function () {
     dashboard: { kicker: "Vue d'ensemble", title: "Tableau de bord" },
     registrations: { kicker: "Licences", title: "Inscriptions médecins" },
     licenses: { kicker: "Licences", title: "Clés d'activation" },
+    updates: { kicker: "Desktop", title: "Mises à jour" },
     ai: { kicker: "Intelligence artificielle", title: "IA & Médecins" }
   };
 
   var REG_STATUS = { pending_activation: "En attente", activated: "Activé" };
   var LIC_STATUS = { generated: "Disponible", used: "Utilisée", revoked: "Révoquée" };
+  var REL_SEVERITY = { mandatory: "Obligatoire", paid: "Payante", paid_mandatory: "Payante + obligatoire" };
+  var REL_STATUS = { draft: "Brouillon", published: "Publiée", yanked: "Retirée" };
 
   var state = {
     session: null,
@@ -533,10 +632,11 @@ export const ADMIN_JS = `(function () {
     rows: [], apiKeys: [], providers: {}, defaults: { monthly_limit: 500, daily_limit: 50 },
     query: "", keyFilter: "all",
     registrations: [], licenses: [], stats: {},
+    releases: [], updateStats: {}, heartbeats: [],
     regQuery: "", regStatusFilter: "all",
     licenseQuery: "", licenseStatusFilter: "all",
-    editingDoctorId: "", editingKeyId: "", editingLicenseId: "",
-    pendingCloudDoctorRegistrationId: ""
+    editingDoctorId: "", editingKeyId: "", editingLicenseId: "", editingReleaseId: "",
+    pendingCloudDoctorRegistrationId: "", pendingEntitlementRegId: ""
   };
 
   var el = {};
@@ -600,7 +700,7 @@ export const ADMIN_JS = `(function () {
     document.querySelectorAll(".nav-item").forEach(function (n) {
       n.classList.toggle("active", n.dataset.view === view);
     });
-    ["dashboard","registrations","licenses","ai"].forEach(function (name) {
+    ["dashboard","registrations","licenses","updates","ai"].forEach(function (name) {
       var panel = byId("view-" + name);
       if (panel) panel.classList.toggle("hidden", name !== view);
     });
@@ -610,7 +710,9 @@ export const ADMIN_JS = `(function () {
     var results = await Promise.all([
       apiFetch("/api/admin/doctors"),
       apiFetch("/api/admin/registrations"),
-      apiFetch("/api/admin/licenses")
+      apiFetch("/api/admin/licenses"),
+      apiFetch("/api/admin/releases").catch(function () { return { rows: [], stats: {} }; }),
+      apiFetch("/api/admin/update-telemetry").catch(function () { return { rows: [], stats: {} }; })
     ]);
     state.rows = results[0].rows || [];
     state.apiKeys = results[0].api_keys || [];
@@ -619,6 +721,9 @@ export const ADMIN_JS = `(function () {
     state.registrations = results[1].rows || [];
     state.licenses = results[2].rows || [];
     state.stats = results[2].stats || results[1].stats || {};
+    state.releases = results[3].rows || [];
+    state.updateStats = results[3].stats || results[4].stats || {};
+    state.heartbeats = results[4].rows || [];
     renderAll();
   }
 
@@ -627,11 +732,14 @@ export const ADMIN_JS = `(function () {
     renderKeyFilter();
     renderDoctorKeyOptions();
     renderLicenseMetrics();
+    renderUpdateMetrics();
     renderMetrics();
     renderKeys();
     renderDoctors();
     renderRegistrations();
     renderLicenses();
+    renderReleases();
+    renderTelemetry();
   }
 
   function statCard(label, value, accent) {
@@ -645,6 +753,19 @@ export const ADMIN_JS = `(function () {
       statCard("En attente d'activation", s.registrations_pending || 0, "accent-amber") +
       statCard("Médecins activés", s.registrations_activated || 0, "accent-green") +
       statCard("Licences générées", s.licenses_total || 0, "accent-violet");
+  }
+
+  function renderUpdateMetrics() {
+    if (!el.updateMetrics) return;
+    var s = state.updateStats || {};
+    var failures = (state.heartbeats || []).filter(function (h) {
+      return String(h.update_status || "").indexOf("fail") !== -1 || String(h.last_error || "").length > 0;
+    }).length;
+    el.updateMetrics.innerHTML =
+      statCard("Sur dernière stable", s.installs_on_latest_stable || 0, "accent-green") +
+      statCard("Releases publiées", s.releases_published || 0, "accent-blue") +
+      statCard("Entitlements actifs", s.entitlements_active || 0, "accent-violet") +
+      statCard("Échecs / alertes update", failures, "accent-amber");
   }
 
   function renderMetrics() {
@@ -753,17 +874,21 @@ export const ADMIN_JS = `(function () {
     var html = rows.map(function (r) {
       var st = r.status === "activated" ? badge("green", REG_STATUS.activated) : badge("amber", REG_STATUS.pending_activation);
       var lic = r.license ? '<div class="cell-sub">' + escapeHtml(r.license.key_hint) + ' (' + escapeHtml(r.license.license_type) + ')</div>' : '<div class="cell-sub">Pas encore de licence</div>';
+      var skus = (r.update_skus || []).length ? (r.update_skus || []).map(function (s) { return badge("violet", s); }).join(" ") : '<div class="cell-sub">Pas de mise à jour payante</div>';
       return '<tr><td><div class="cell-title">' + escapeHtml(r.full_name || "—") + '</div><div class="cell-sub">' + escapeHtml(r.specialty || "") + (r.wilaya ? " · " + escapeHtml(r.wilaya) : "") + '</div></td>' +
         '<td><div class="cell-sub">' + escapeHtml(r.phone || "") + '</div><div class="cell-sub">' + escapeHtml(r.email || "") + '</div></td>' +
         '<td>' + st + (r.cloud_doctor_id ? badge("violet","IA liée") : "") + lic + '</td>' +
-        '<td><div class="cell-sub">Inscrit : ' + escapeHtml((r.registered_at || "").slice(0,10)) + '</div></td>' +
+        '<td><div class="cell-sub">Canal : ' + escapeHtml(r.update_channel || "stable") + '</div>' +
+        '<div class="cell-sub">App : ' + escapeHtml(r.app_version || "—") + '</div>' + skus + '</td>' +
         '<td class="row-actions">' +
           '<button class="btn ghost" type="button" data-action="reg-generate" data-id="' + escapeHtml(r.id) + '">Générer clé</button>' +
+          '<button class="btn primary" type="button" data-action="reg-entitle" data-id="' + escapeHtml(r.id) + '">Activer MAJ payante</button>' +
+          ((r.update_skus || []).length ? '<button class="btn danger" type="button" data-action="reg-revoke-entitle" data-id="' + escapeHtml(r.id) + '" data-sku="' + escapeHtml((r.update_skus || [])[0] || "premium_2026") + '">Révoquer MAJ</button>' : "") +
           (r.cloud_doctor_id ? "" : '<button class="btn ghost" type="button" data-action="reg-cloud-doctor" data-id="' + escapeHtml(r.id) + '">Créer compte IA</button>') +
           '<button class="btn danger" type="button" data-action="reg-delete" data-id="' + escapeHtml(r.id) + '">Supprimer</button>' +
         '</td></tr>';
     }).join("");
-    el.regRows.innerHTML = '<table class="data-table"><thead><tr><th>Médecin</th><th>Contact</th><th>Statut</th><th>Date</th><th></th></tr></thead><tbody>' + html + '</tbody></table>';
+    el.regRows.innerHTML = '<table class="data-table"><thead><tr><th>Médecin</th><th>Contact</th><th>Licence</th><th>Updates</th><th></th></tr></thead><tbody>' + html + '</tbody></table>';
   }
 
   function filteredLicenses() {
@@ -813,6 +938,160 @@ export const ADMIN_JS = `(function () {
   function findDoctor(id) { return state.rows.find(function (r) { return r.doctor_id === id; }); }
   function findRegistration(id) { return state.registrations.find(function (r) { return r.id === id; }); }
   function findLicense(id) { return state.licenses.find(function (r) { return r.id === id; }); }
+  function findRelease(id) { return state.releases.find(function (r) { return r.id === id; }); }
+
+  function renderReleases() {
+    if (!el.releaseRows) return;
+    var rows = state.releases || [];
+    el.releaseCount.textContent = rows.length;
+    if (!rows.length) { el.releaseRows.innerHTML = '<div class="empty">Aucune release. Créez-en une ou publiez via CI (tag GitHub).</div>'; return; }
+    var html = rows.map(function (r) {
+      var sev = REL_SEVERITY[r.severity] || r.severity;
+      var stCls = r.status === "published" ? "green" : r.status === "yanked" ? "red" : "amber";
+      return '<tr><td><div class="cell-title">v' + escapeHtml(r.version) + '</div><div class="cell-sub">' + escapeHtml(r.channel) + '</div></td>' +
+        '<td>' + badge("blue", sev) + badge(stCls, REL_STATUS[r.status] || r.status) +
+        (r.sku ? '<div class="cell-sub">SKU : ' + escapeHtml(r.sku) + '</div>' : "") + '</td>' +
+        '<td><div class="cell-sub">Rollout : ' + escapeHtml(r.rollout_percent) + '%</div>' +
+        '<div class="cell-sub">' + escapeHtml((r.notes || "").slice(0, 80)) + '</div></td>' +
+        '<td><div class="cell-sub">' + escapeHtml((r.published_at || r.updated_at || "").slice(0, 16).replace("T", " ")) + '</div></td>' +
+        '<td class="row-actions">' +
+          '<button class="btn ghost" type="button" data-action="release-edit" data-id="' + escapeHtml(r.id) + '">Modifier</button>' +
+          (r.status !== "published" ? '<button class="btn primary" type="button" data-action="release-publish" data-id="' + escapeHtml(r.id) + '">Publier</button>' : "") +
+          '<button class="btn danger" type="button" data-action="release-delete" data-id="' + escapeHtml(r.id) + '">Supprimer</button>' +
+        '</td></tr>';
+    }).join("");
+    el.releaseRows.innerHTML = '<table class="data-table"><thead><tr><th>Version</th><th>Type</th><th>Déploiement</th><th>Date</th><th></th></tr></thead><tbody>' + html + '</tbody></table>';
+  }
+
+  function renderTelemetry() {
+    if (!el.telemetryRows) return;
+    var rows = state.heartbeats || [];
+    el.telemetryCount.textContent = rows.length;
+    if (!rows.length) { el.telemetryRows.innerHTML = '<div class="empty">Aucune télémétrie reçue pour le moment.</div>'; return; }
+    var html = rows.map(function (h) {
+      var reg = findRegistration(h.registration_id);
+      return '<tr><td><div class="cell-title">' + escapeHtml(reg ? reg.full_name : h.registration_id) + '</div></td>' +
+        '<td>' + escapeHtml(h.app_version || "—") + '</td>' +
+        '<td>' + escapeHtml(h.channel || "—") + '</td>' +
+        '<td><div class="cell-sub">' + escapeHtml(h.update_status || "—") + '</div>' +
+        (h.last_error ? '<div class="cell-sub">' + escapeHtml(h.last_error) + '</div>' : "") + '</td>' +
+        '<td class="cell-sub">' + escapeHtml((h.reported_at || "").slice(0, 16).replace("T", " ")) + '</td></tr>';
+    }).join("");
+    el.telemetryRows.innerHTML = '<table class="data-table"><thead><tr><th>Médecin</th><th>Version</th><th>Canal</th><th>Statut</th><th>Vu</th></tr></thead><tbody>' + html + '</tbody></table>';
+  }
+
+  function openReleaseDialog(release) {
+    state.editingReleaseId = release ? release.id : "";
+    el.releaseForm.reset();
+    el.releaseDialogMode.textContent = release ? "Modifier" : "Créer";
+    el.releaseDialogTitle.textContent = release ? ("v" + release.version) : "Nouvelle release";
+    el.releaseId.value = release ? release.id : "";
+    el.releaseVersion.value = release ? release.version : "";
+    el.releaseVersion.readOnly = Boolean(release);
+    el.releaseChannel.value = release ? release.channel : "stable";
+    el.releaseSeverity.value = release ? release.severity : "mandatory";
+    el.releaseSku.value = release ? (release.sku || "") : "premium_2026";
+    el.releaseRollout.value = release ? release.rollout_percent : 100;
+    el.releaseStatus.value = release ? release.status : "draft";
+    el.releaseNotes.value = release ? (release.notes || "") : "";
+    el.releaseArtifactUrl.value = release ? (release.artifact_url || "") : "";
+    el.releaseArtifactSignature.value = release ? (release.artifact_signature || "") : "";
+    el.releaseMigrationRisk.value = release ? (release.migration_risk || "low") : "low";
+    el.releaseDialog.showModal();
+  }
+
+  async function saveRelease(e) {
+    e.preventDefault();
+    var btn = el.releaseForm.querySelector('button[type="submit"]');
+    setBusy(btn, true);
+    try {
+      var body = {
+        version: el.releaseVersion.value.trim(),
+        channel: el.releaseChannel.value,
+        severity: el.releaseSeverity.value,
+        sku: el.releaseSku.value.trim(),
+        rollout_percent: parseInt(el.releaseRollout.value, 10) || 0,
+        status: el.releaseStatus.value,
+        notes: el.releaseNotes.value.trim(),
+        artifact_url: el.releaseArtifactUrl.value.trim(),
+        artifact_signature: el.releaseArtifactSignature.value.trim(),
+        migration_risk: el.releaseMigrationRisk.value,
+        backup_recommended: el.releaseMigrationRisk.value === "high",
+      };
+      if (state.editingReleaseId) {
+        await apiFetch("/api/admin/releases/" + encodeURIComponent(state.editingReleaseId), { method: "PATCH", body: body });
+      } else {
+        await apiFetch("/api/admin/releases", { method: "POST", body: body });
+      }
+      el.releaseDialog.close();
+      state.editingReleaseId = "";
+      await loadData();
+      showToast("Release enregistrée");
+    } catch (err) { showToast(err.message, true); }
+    finally { setBusy(btn, false); }
+  }
+
+  async function publishRelease(id) {
+    try {
+      await apiFetch("/api/admin/releases/" + encodeURIComponent(id) + "/publish", { method: "POST" });
+      await loadData();
+      showToast("Release publiée");
+    } catch (e) { showToast(e.message, true); }
+  }
+
+  async function deleteRelease(id) {
+    if (!confirm("Supprimer cette release ?")) return;
+    try {
+      await apiFetch("/api/admin/releases/" + encodeURIComponent(id), { method: "DELETE" });
+      await loadData();
+      showToast("Release supprimée");
+    } catch (e) { showToast(e.message, true); }
+  }
+
+  function openEntitlementDialog(regId) {
+    var reg = findRegistration(regId);
+    if (!reg) { showToast("Inscription introuvable", true); return; }
+    state.pendingEntitlementRegId = regId;
+    el.entitlementRegId.value = regId;
+    el.entitlementRegLabel.textContent = (reg.full_name || "") + " — après paiement hors application";
+    el.entitlementSku.value = "premium_2026";
+    el.entitlementChannel.value = reg.update_channel || "stable";
+    el.entitlementNote.value = "";
+    el.entitlementDialog.showModal();
+  }
+
+  async function saveEntitlement(e) {
+    e.preventDefault();
+    var regId = state.pendingEntitlementRegId || el.entitlementRegId.value;
+    if (!regId) return;
+    var btn = el.entitlementForm.querySelector('button[type="submit"]');
+    setBusy(btn, true);
+    try {
+      await apiFetch("/api/admin/registrations/" + encodeURIComponent(regId) + "/entitlements", {
+        method: "POST",
+        body: { sku: el.entitlementSku.value.trim() || "premium_2026", note: el.entitlementNote.value.trim() }
+      });
+      await apiFetch("/api/admin/registrations/" + encodeURIComponent(regId) + "/update-channel", {
+        method: "POST",
+        body: { channel: el.entitlementChannel.value }
+      });
+      el.entitlementDialog.close();
+      state.pendingEntitlementRegId = "";
+      await loadData();
+      showToast("Mise à jour payante activée");
+    } catch (err) { showToast(err.message, true); }
+    finally { setBusy(btn, false); }
+  }
+
+  async function revokeEntitlement(id, sku) {
+    sku = sku || "premium_2026";
+    if (!confirm("Révoquer l'accès à la mise à jour payante (" + sku + ") ?")) return;
+    try {
+      await apiFetch("/api/admin/registrations/" + encodeURIComponent(id) + "/entitlements/" + encodeURIComponent(sku) + "/revoke", { method: "POST" });
+      await loadData();
+      showToast("Entitlement révoqué");
+    } catch (e) { showToast(e.message, true); }
+  }
 
   function openCloudDoctorDialog(regId) {
     var reg = findRegistration(regId);
@@ -1113,10 +1392,13 @@ export const ADMIN_JS = `(function () {
     el.refreshButton.addEventListener("click", function () { loadData().then(function () { showToast("Actualisé"); }).catch(function (e) { showToast(e.message, true); }); });
     el.sidebarNav.addEventListener("click", function (e) { var n = e.target.closest(".nav-item"); if (n) setView(n.dataset.view); });
     el.newLicenseButtonAlt.addEventListener("click", function () { openLicenseDialog(""); });
+    el.newReleaseButton.addEventListener("click", function () { openReleaseDialog(null); });
     el.newKeyButton.addEventListener("click", function () { openKeyDialog(null); });
     el.newDoctorButton.addEventListener("click", function () { openDoctorDialog(null); });
     el.licenseForm.addEventListener("submit", saveLicense);
     el.licenseEditForm.addEventListener("submit", saveLicenseEdit);
+    el.releaseForm.addEventListener("submit", saveRelease);
+    el.entitlementForm.addEventListener("submit", saveEntitlement);
     el.keyForm.addEventListener("submit", saveKey);
     el.doctorForm.addEventListener("submit", saveDoctor);
     el.cloudDoctorSubmit.addEventListener("click", function () { submitCloudDoctor(false); });
@@ -1130,7 +1412,24 @@ export const ADMIN_JS = `(function () {
     el.licenseStatusFilter.addEventListener("change", function () { state.licenseStatusFilter = el.licenseStatusFilter.value; renderLicenses(); });
     el.searchInput.addEventListener("input", function () { state.query = el.searchInput.value; renderDoctors(); });
     el.keyFilter.addEventListener("change", function () { state.keyFilter = el.keyFilter.value; renderDoctors(); });
-    el.regRows.addEventListener("click", function (e) { handleTableClick(e, { "reg-generate": openLicenseDialog, "reg-cloud-doctor": createCloudDoctor, "reg-delete": deleteRegistration }); });
+    el.regRows.addEventListener("click", function (e) {
+      var btn = e.target.closest("button[data-action]");
+      if (!btn) return;
+      var action = btn.dataset.action;
+      var id = btn.dataset.id;
+      if (action === "reg-generate") openLicenseDialog(id);
+      else if (action === "reg-cloud-doctor") createCloudDoctor(id);
+      else if (action === "reg-delete") deleteRegistration(id);
+      else if (action === "reg-entitle") openEntitlementDialog(id);
+      else if (action === "reg-revoke-entitle") revokeEntitlement(id, btn.dataset.sku);
+    });
+    el.releaseRows.addEventListener("click", function (e) {
+      handleTableClick(e, {
+        "release-edit": function (id) { openReleaseDialog(findRelease(id)); },
+        "release-publish": publishRelease,
+        "release-delete": deleteRelease
+      });
+    });
     el.licenseRows.addEventListener("click", function (e) { handleTableClick(e, { "license-copy": copyLicenseKey, "license-edit": openLicenseEditDialog, "license-revoke": revokeLicense, "license-delete": deleteLicense }); });
     el.keyRows.addEventListener("click", function (e) { handleTableClick(e, { "edit-key": function (id) { openKeyDialog(findKey(id)); }, "delete-key": deleteKey }); });
     el.doctorRows.addEventListener("click", function (e) { handleTableClick(e, { "edit-doctor": function (id) { openDoctorDialog(findDoctor(id)); }, "logs": openLogs, "delete-doctor": deleteDoctor }); });
@@ -1145,11 +1444,14 @@ export const ADMIN_JS = `(function () {
   function init() {
     ["loginScreen","loginForm","loginUsername","loginPassword","loginSubmit","appShell","sidebarNav",
      "userDisplayName","userAvatar","pageKicker","pageTitle","refreshButton","logoutButton","mainContent",
-     "licenseMetrics","metrics","regSearchInput","regStatusFilter","regCount","regRows",
+     "licenseMetrics","updateMetrics","metrics","regSearchInput","regStatusFilter","regCount","regRows",
      "licenseSearchInput","licenseStatusFilter","licenseCount","licenseRows","newLicenseButtonAlt",
+     "newReleaseButton","releaseCount","releaseRows","telemetryCount","telemetryRows",
      "newKeyButton","newDoctorButton","keyCount","keyRows","searchInput","keyFilter","doctorCount","doctorRows",
      "licenseDialog","licenseForm","licenseRegistration","licenseType","trialDaysWrap","licenseTrialDays","licenseNote",
      "licenseEditDialog","licenseEditForm","licenseEditId","licenseEditSerial","licenseEditStatus","licenseEditExpires","licenseEditRegistration","licenseEditType","licenseEditTrialWrap","licenseEditTrialDays","licenseEditNote",
+     "releaseDialog","releaseForm","releaseDialogMode","releaseDialogTitle","releaseId","releaseVersion","releaseChannel","releaseSeverity","releaseSku","releaseRollout","releaseStatus","releaseNotes","releaseArtifactUrl","releaseArtifactSignature","releaseMigrationRisk",
+     "entitlementDialog","entitlementForm","entitlementRegId","entitlementRegLabel","entitlementSku","entitlementChannel","entitlementNote",
      "serialDialog","generatedSerialKey","generatedSerialMeta",
      "keyDialog","keyForm","keyDialogMode","keyDialogTitle","keyId","keyName","keyProvider","keyModel","keySecret","keyActive","clearKeyWrap","clearKeySecret",
      "doctorDialog","doctorForm","doctorDialogMode","doctorDialogTitle","doctorId","doctorEmail","doctorAssignedKey","doctorMonthlyLimit","doctorDailyLimit","doctorActive","doctorAiEnabled","doctorUsageTools","setMonthlyUsed","setDailyUsed","resetMonthly","resetDaily",
