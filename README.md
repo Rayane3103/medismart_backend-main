@@ -53,6 +53,18 @@ Signs activation tokens. If unset, a random secret is generated once and stored
 in Redis (`license:signing_secret`). Set it explicitly so tokens survive a
 Redis wipe.
 
+Recommended for desktop updates (Phase C+):
+
+```txt
+UPDATE_SIGNING_SECRET=<long random string>
+UPDATE_PUBLISH_TOKEN=<long random string>
+```
+
+- `UPDATE_SIGNING_SECRET` signs offline entitlement proofs (falls back to `LICENSE_SIGNING_SECRET`).
+- `UPDATE_PUBLISH_TOKEN` lets GitHub Actions register a release via
+  `POST /api/admin/releases/publish` with header `X-Update-Publish-Token`.
+  Use the same value as the `UPDATE_PUBLISH_TOKEN` secret on `medismart-desktop`.
+
 ## Local Development
 
 ```bash
@@ -110,6 +122,9 @@ https://your-service.onrender.com/admin
 | POST | `/api/registrations/sync` | Desktop app uploads an offline-created doctor registration (idempotent by `client_registration_id`) |
 | POST | `/api/activation/activate` | Body includes `serial_key` + registration fields + `device_fingerprint`; validates the key, enforces one-time use, returns a signed activation token |
 | POST | `/api/activation/verify` | Re-validates a stored activation token (revocation check) |
+| POST | `/api/updates/check` | Desktop policy check — returns mandatory/paid update decision (artifacts only if allowed) |
+| POST | `/api/updates/entitlements/refresh` | Returns active SKUs + signed entitlement proof for offline cache |
+| POST | `/api/updates/heartbeat` | Reports installed version / update status (no clinical data) |
 
 ### Doctor
 
@@ -150,5 +165,19 @@ Use header `X-Admin-Token` (session token from `POST /api/admin/login`).
 | POST | `/api/admin/licenses` | Generate a serial key (`license_type`: `trial`+`trial_days` or `lifetime`, optional `registration_id`, `note`). The raw key is returned once |
 | POST | `/api/admin/licenses/:id/revoke` | Revoke a license |
 | DELETE | `/api/admin/licenses/:id` | Delete an unused license |
+| GET | `/api/admin/releases` | List desktop releases |
+| POST | `/api/admin/releases` | Create/update a release (`severity`: `mandatory` \| `paid` \| `paid_mandatory`) |
+| PATCH | `/api/admin/releases/:id` | Patch release metadata / rollout / artifacts |
+| POST | `/api/admin/releases/:id/publish` | Mark a release published |
+| POST | `/api/admin/releases/publish` | Upsert+publish (admin session **or** `X-Update-Publish-Token` for CI) |
+| DELETE | `/api/admin/releases/:id` | Delete a release |
+| GET | `/api/admin/registrations/:id/entitlements` | List paid-update SKUs for a doctor |
+| POST | `/api/admin/registrations/:id/entitlements` | **Enable paid update** — body `{ sku, note }` |
+| POST | `/api/admin/registrations/:id/entitlements/:sku/revoke` | Revoke a paid-update entitlement |
+| POST | `/api/admin/registrations/:id/update-channel` | Set `stable` / `beta` / `internal` |
+| GET | `/api/admin/update-telemetry` | Installed versions / update statuses |
+| GET | `/api/admin/update-stats` | Update dashboard counters |
 
 Cloud AI usage is tracked as **requests per day** and **requests per month** per doctor account (limits set in the admin panel).
+
+Paid desktop updates are unlocked with `POST /api/admin/registrations/:id/entitlements` after payment outside the app — no per-update serial keys.

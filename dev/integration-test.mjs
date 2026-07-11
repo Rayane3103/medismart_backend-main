@@ -177,5 +177,205 @@ const usedLicense = (r.data.rows || []).find((row) => row.status === "used");
 r = await call(`/api/admin/licenses/${usedLicense.id}`, { method: "DELETE", headers: ADMIN });
 check("used license delete refused", r.status === 409);
 
+// ---------- Phase C: updates / entitlements ----------
+
+// 22. Publish mandatory release
+r = await call("/api/admin/releases", {
+  method: "POST",
+  headers: ADMIN,
+  body: {
+    version: "2.2.0",
+    channel: "stable",
+    severity: "mandatory",
+    notes: "Correctif sécurité",
+    rollout_percent: 100,
+    artifact_url: "https://github.com/Rayane3103/medismart-desktop/releases/download/v2.2.0/MediSmart-Pro-2.2.0-setup.exe",
+    artifact_signature: "dGVzdC1zaWduYXR1cmUtZmFrZS1wb3VyLWludGVncmF0aW9u",
+    status: "published",
+  },
+});
+check("mandatory release published", r.status === 201 && r.data.release?.version === "2.2.0", JSON.stringify(r.data));
+const releaseId = r.data.release?.id;
+
+// 23. Check offers mandatory update
+r = await call("/api/updates/check", {
+  method: "POST",
+  body: {
+    current_version: "2.1.0",
+    client_registration_id: registration.client_registration_id,
+    activation_token: activationToken,
+    channel: "stable",
+  },
+});
+check(
+  "check returns mandatory update",
+  r.status === 200 && r.data.available === true && r.data.severity === "mandatory" && Boolean(r.data.artifacts?.url),
+  JSON.stringify(r.data)
+);
+
+// 24. Up to date
+r = await call("/api/updates/check", {
+  method: "POST",
+  body: {
+    current_version: "2.2.0",
+    client_registration_id: registration.client_registration_id,
+    channel: "stable",
+  },
+});
+check("check up_to_date", r.status === 200 && r.data.available === false && r.data.reason === "up_to_date");
+
+// 25. Paid release denied without entitlement
+r = await call("/api/admin/releases", {
+  method: "POST",
+  headers: ADMIN,
+  body: {
+    version: "3.0.0",
+    channel: "stable",
+    severity: "paid",
+    sku: "premium_2026",
+    notes: "Mise à jour premium",
+    rollout_percent: 100,
+    artifact_url: "https://example.com/premium.exe",
+    artifact_signature: "cHJlbWl1bS1zaWc=",
+    status: "published",
+  },
+});
+check("paid release published", r.status === 201 && r.data.release?.severity === "paid", JSON.stringify(r.data));
+
+r = await call("/api/updates/check", {
+  method: "POST",
+  body: {
+    current_version: "2.2.0",
+    client_registration_id: registration.client_registration_id,
+    channel: "stable",
+  },
+});
+check(
+  "paid update denied without entitlement",
+  r.status === 200 && r.data.available === false && r.data.reason === "entitlement_required" && !r.data.artifacts,
+  JSON.stringify(r.data)
+);
+
+// 26. Grant entitlement (admin Enable button)
+r = await call(`/api/admin/registrations/${regId}/entitlements`, {
+  method: "POST",
+  headers: ADMIN,
+  body: { sku: "premium_2026", note: "paiement reçu" },
+});
+check("entitlement granted", r.status === 201 && r.data.entitlement?.sku === "premium_2026", JSON.stringify(r.data));
+
+r = await call("/api/updates/check", {
+  method: "POST",
+  body: {
+    current_version: "2.2.0",
+    client_registration_id: registration.client_registration_id,
+    channel: "stable",
+  },
+});
+check(
+  "paid update allowed after entitlement",
+  r.status === 200 && r.data.available === true && r.data.severity === "paid" && Boolean(r.data.artifacts?.signature),
+  JSON.stringify(r.data)
+);
+
+// 27. Entitlements refresh returns signed proof
+r = await call("/api/updates/entitlements/refresh", {
+  method: "POST",
+  body: { client_registration_id: registration.client_registration_id },
+});
+check(
+  "entitlement proof issued",
+  r.status === 200 && Array.isArray(r.data.skus) && r.data.skus.includes("premium_2026") && Boolean(r.data.entitlement_proof),
+  JSON.stringify(r.data)
+);
+
+// 28. Heartbeat
+r = await call("/api/updates/heartbeat", {
+  method: "POST",
+  body: {
+    client_registration_id: registration.client_registration_id,
+    app_version: "2.2.0",
+    channel: "stable",
+    update_status: "up_to_date",
+    os: "windows",
+    arch: "x86_64",
+  },
+});
+check("heartbeat accepted", r.status === 200 && r.data.heartbeat?.app_version === "2.2.0");
+
+r = await call("/api/admin/update-telemetry", { headers: ADMIN });
+check("telemetry lists heartbeat", r.status === 200 && (r.data.rows || []).some((row) => row.registration_id === regId));
+
+// 29. Staged rollout blocks when percent=0
+if (releaseId) {
+  r = await call(`/api/admin/releases/${releaseId}`, {
+    method: "PATCH",
+    headers: ADMIN,
+    body: { rollout_percent: 0, status: "published" },
+  });
+  check("rollout set to 0", r.status === 200 && r.data.release?.rollout_percent === 0);
+}
+// Re-check against 2.2.0 mandatory with rollout 0 — but latest is now 3.0.0 paid.
+// Create isolated mandatory 2.5.0 with rollout 0.
+r = await call("/api/admin/releases", {
+  method: "POST",
+  headers: ADMIN,
+  body: {
+    version: "2.5.0",
+    channel: "internal",
+    severity: "mandatory",
+    rollout_percent: 0,
+    artifact_url: "https://example.com/2.5.exe",
+    artifact_signature: "dGVzdA==",
+    status: "published",
+  },
+});
+const lowRolloutId = r.data.release?.id;
+check("internal rollout-0 release created", r.status === 201);
+
+r = await call("/api/updates/check", {
+  method: "POST",
+  body: {
+    current_version: "2.1.0",
+    client_registration_id: registration.client_registration_id,
+    channel: "internal",
+  },
+});
+check("rollout 0 denies update", r.status === 200 && r.data.reason === "not_in_rollout", JSON.stringify(r.data));
+
+if (lowRolloutId) {
+  await call(`/api/admin/releases/${lowRolloutId}`, {
+    method: "PATCH",
+    headers: ADMIN,
+    body: { allowlist_registration_ids: [regId], rollout_percent: 0 },
+  });
+  r = await call("/api/updates/check", {
+    method: "POST",
+    body: {
+      current_version: "2.1.0",
+      client_registration_id: registration.client_registration_id,
+      channel: "internal",
+    },
+  });
+  check("allowlist bypasses rollout 0", r.status === 200 && r.data.available === true && r.data.version === "2.5.0", JSON.stringify(r.data));
+}
+
+// 30. Revoke entitlement
+r = await call(`/api/admin/registrations/${regId}/entitlements/premium_2026/revoke`, {
+  method: "POST",
+  headers: ADMIN,
+});
+check("entitlement revoked", r.status === 200 && r.data.entitlement?.status === "revoked");
+
+r = await call("/api/updates/check", {
+  method: "POST",
+  body: {
+    current_version: "2.2.0",
+    client_registration_id: registration.client_registration_id,
+    channel: "stable",
+  },
+});
+check("paid update denied after revoke", r.status === 200 && r.data.reason === "entitlement_required");
+
 console.log(`\n${passed} passed, ${failed} failed`);
 process.exit(failed ? 1 : 0);

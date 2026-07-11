@@ -23,6 +23,12 @@ import {
   verifyActivationToken,
   getLicense,
 } from "./licensing.js";
+import {
+  handleUpdatesPublicRoutes,
+  handleUpdatesAdminRoutes,
+  handleUpdatesPublishRoute,
+  verifyUpdatePublishToken,
+} from "./updates.js";
 
 const CLOUD_NOT_PROVISIONED_MSG =
   "L'accès IA n'est pas encore activé. Contactez votre administrateur MediSmart.";
@@ -94,8 +100,8 @@ function nextRenewalDate(from = new Date()) {
 function send(res, status, contentType, body, extraHeaders = {}) {
   res.status(status).setHeader("Content-Type", contentType);
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Doctor-Token, X-Admin-Token");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Doctor-Token, X-Admin-Token, X-Update-Publish-Token");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
   for (const [key, value] of Object.entries(extraHeaders)) res.setHeader(key, value);
   res.send(body);
 }
@@ -749,7 +755,13 @@ export default async function handler(req, res) {
         service: "medismart-ai-credits",
         providers: providerConfig(),
         default_limits: DEFAULT_LIMITS,
-        features: { licensing: true, registration_sync: true, activation: true },
+        features: {
+          licensing: true,
+          registration_sync: true,
+          activation: true,
+          updates: true,
+          entitlements: true,
+        },
       });
     }
 
@@ -759,6 +771,17 @@ export default async function handler(req, res) {
 
     // ---- licensing: registration sync + serial key activation (public) ----
     if (await handleLicensingPublicRoutes(req, res, path, { readJson, ok, err })) return;
+
+    // ---- updates: desktop check / entitlements / heartbeat (public) ----
+    if (await handleUpdatesPublicRoutes(req, res, path, { readJson, ok, err })) return;
+
+    // ---- CI release publish with UPDATE_PUBLISH_TOKEN (no admin session needed) ----
+    if (path === "/api/admin/releases/publish" && req.method === "POST") {
+      if (verifyUpdatePublishToken(req)) {
+        if (await handleUpdatesPublishRoute(req, res, path, { readJson, ok, err })) return;
+      }
+      // else fall through to admin session auth below
+    }
 
     // ---- admin sign-in (public) ----
     if (path === "/api/admin/login" && req.method === "POST") {
@@ -958,6 +981,24 @@ export default async function handler(req, res) {
 
       // Licensing admin routes (registrations, licenses, stats).
       if (await handleLicensingAdminRoutes(req, res, path, { readJson, ok, err })) return;
+
+      // Update control plane (releases, entitlements, telemetry).
+      if (await handleUpdatesAdminRoutes(req, res, path, {
+        readJson,
+        ok,
+        err,
+        adminUsername: session.username || "",
+        adminSession: session,
+      })) return;
+
+      // Same publish endpoint also usable with admin session.
+      if (await handleUpdatesPublishRoute(req, res, path, {
+        readJson,
+        ok,
+        err,
+        adminUsername: session.username || "",
+        adminSession: session,
+      })) return;
 
       // Create a cloud AI doctor account from a synced registration and link them.
       const cloudDoctorMatch = path.match(/^\/api\/admin\/registrations\/([a-f0-9-]+)\/create-cloud-doctor$/);
