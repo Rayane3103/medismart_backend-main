@@ -65,6 +65,13 @@ UPDATE_PUBLISH_TOKEN=<long random string>
   `POST /api/admin/releases/publish` with header `X-Update-Publish-Token`.
   Use the same value as the `UPDATE_PUBLISH_TOKEN` secret on `medismart-desktop`.
 
+Optional (admin button **Importer depuis GitHub** on a private desktop repo):
+
+```txt
+GITHUB_RELEASES_TOKEN=<github classic PAT with repo scope>
+GITHUB_DESKTOP_REPO=Rayane3103/medismart-desktop
+```
+
 ## Local Development
 
 ```bash
@@ -166,6 +173,7 @@ Use header `X-Admin-Token` (session token from `POST /api/admin/login`).
 | POST | `/api/admin/licenses/:id/revoke` | Revoke a license |
 | DELETE | `/api/admin/licenses/:id` | Delete an unused license |
 | GET | `/api/admin/releases` | List desktop releases |
+| POST | `/api/admin/releases/import-github` | Import latest (or tagged) GitHub Release assets into a draft — fills URL + signature automatically |
 | POST | `/api/admin/releases` | Create/update a release (`severity`: `mandatory` \| `paid` \| `paid_mandatory`) |
 | PATCH | `/api/admin/releases/:id` | Patch release metadata / rollout / artifacts |
 | POST | `/api/admin/releases/:id/publish` | Mark a release published |

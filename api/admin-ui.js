@@ -158,8 +158,10 @@ export const ADMIN_HTML = `<!doctype html>
 
         <div class="view hidden" id="view-updates">
           <div class="toolbar toolbar--actions">
-            <button type="button" class="btn primary" id="newReleaseButton">+ Nouvelle release</button>
+            <button type="button" class="btn primary" id="importGithubReleaseButton">Importer depuis GitHub</button>
+            <button type="button" class="btn ghost" id="newReleaseButton">Configurer manuellement</button>
           </div>
+          <p class="subtle" style="padding:0 4px 12px">Normalement : taguez une version sur GitHub → le build arrive ici automatiquement. Puis choisissez Obligatoire/Payante et Publier.</p>
           <section class="panel">
             <div class="panel-head">
               <h2>Releases desktop</h2>
@@ -267,44 +269,35 @@ export const ADMIN_HTML = `<!doctype html>
   <dialog class="modal" id="releaseDialog">
     <form class="modal-card" id="releaseForm">
       <header class="modal-head">
-        <div><p class="kicker" id="releaseDialogMode">Créer</p><h2 id="releaseDialogTitle">Release desktop</h2></div>
+        <div><p class="kicker" id="releaseDialogMode">Configurer</p><h2 id="releaseDialogTitle">Mise à jour</h2></div>
         <button class="icon-close" type="button" data-close-dialog="releaseDialog" aria-label="Fermer">×</button>
       </header>
       <input id="releaseId" type="hidden">
+      <input id="releaseVersion" type="hidden">
+      <input id="releaseChannel" type="hidden" value="stable">
+      <input id="releaseSku" type="hidden" value="premium_2026">
+      <input id="releaseArtifactUrl" type="hidden">
+      <input id="releaseArtifactSignature" type="hidden">
+      <input id="releaseMigrationRisk" type="hidden" value="low">
+      <p class="subtle" id="releaseAutoHint" style="margin:0 0 12px">Version, fichier et signature viennent du build GitHub. Vous choisissez seulement le type et le déploiement.</p>
       <div class="form-grid">
-        <label><span>Version (SemVer)</span><input id="releaseVersion" required placeholder="2.2.0"></label>
-        <label><span>Canal</span>
-          <select id="releaseChannel">
-            <option value="stable">stable</option>
-            <option value="beta">beta</option>
-            <option value="internal">internal</option>
-          </select>
-        </label>
-        <label><span>Type</span>
+        <label><span>Version</span><input id="releaseVersionDisplay" readonly></label>
+        <label><span>Type de mise à jour</span>
           <select id="releaseSeverity">
-            <option value="mandatory">Obligatoire</option>
-            <option value="paid">Payante</option>
+            <option value="mandatory">Obligatoire (tous les médecins)</option>
+            <option value="paid">Payante (après activation manuelle)</option>
             <option value="paid_mandatory">Payante + obligatoire</option>
           </select>
         </label>
-        <label><span>SKU (si payante)</span><input id="releaseSku" placeholder="premium_2026"></label>
-        <label><span>Déploiement progressif %</span><input id="releaseRollout" type="number" min="0" max="100" value="100"></label>
-        <label><span>Statut</span>
+        <label><span>Déploiement %</span><input id="releaseRollout" type="number" min="0" max="100" value="100"></label>
+        <label><span>Publier maintenant ?</span>
           <select id="releaseStatus">
-            <option value="draft">Brouillon</option>
-            <option value="published">Publiée</option>
-            <option value="yanked">Retirée</option>
+            <option value="published">Oui — visible pour les apps</option>
+            <option value="draft">Non — brouillon</option>
+            <option value="yanked">Retirer</option>
           </select>
         </label>
-        <label class="full"><span>Notes (médecin)</span><input id="releaseNotes" placeholder="Correctif sécurité, nouvelles fonctions…"></label>
-        <label class="full"><span>URL artefact</span><input id="releaseArtifactUrl" placeholder="https://github.com/.../setup.exe"></label>
-        <label class="full"><span>Signature (.sig)</span><textarea id="releaseArtifactSignature" rows="3" placeholder="Contenu du fichier .sig"></textarea></label>
-        <label><span>Risque migration</span>
-          <select id="releaseMigrationRisk">
-            <option value="low">Faible</option>
-            <option value="high">Élevé</option>
-          </select>
-        </label>
+        <label class="full"><span>Message court (optionnel)</span><input id="releaseNotes" placeholder="Correctif sécurité…"></label>
       </div>
       <footer class="modal-foot"><button class="btn ghost" type="button" data-close-dialog="releaseDialog">Annuler</button><button class="btn primary" type="submit">Enregistrer</button></footer>
     </form>
@@ -313,21 +306,15 @@ export const ADMIN_HTML = `<!doctype html>
   <dialog class="modal" id="entitlementDialog">
     <form class="modal-card" id="entitlementForm">
       <header class="modal-head">
-        <div><p class="kicker">Mise à jour payante</p><h2>Activer pour ce médecin</h2></div>
+        <div><p class="kicker">Après paiement</p><h2>Activer la mise à jour payante</h2></div>
         <button class="icon-close" type="button" data-close-dialog="entitlementDialog" aria-label="Fermer">×</button>
       </header>
       <input id="entitlementRegId" type="hidden">
+      <input id="entitlementSku" type="hidden" value="premium_2026">
+      <input id="entitlementChannel" type="hidden" value="stable">
       <p class="subtle" id="entitlementRegLabel" style="margin:0 0 12px"></p>
       <div class="form-grid">
-        <label><span>SKU</span><input id="entitlementSku" required value="premium_2026"></label>
-        <label><span>Canal de mise à jour</span>
-          <select id="entitlementChannel">
-            <option value="stable">stable</option>
-            <option value="beta">beta</option>
-            <option value="internal">internal</option>
-          </select>
-        </label>
-        <label class="full"><span>Note (paiement hors app)</span><input id="entitlementNote" placeholder="Virement reçu le…"></label>
+        <label class="full"><span>Note interne (optionnel)</span><input id="entitlementNote" placeholder="Virement reçu le…"></label>
       </div>
       <footer class="modal-foot"><button class="btn ghost" type="button" data-close-dialog="entitlementDialog">Annuler</button><button class="btn primary" type="submit">Activer</button></footer>
     </form>
@@ -980,23 +967,39 @@ export const ADMIN_JS = `(function () {
     el.telemetryRows.innerHTML = '<table class="data-table"><thead><tr><th>Médecin</th><th>Version</th><th>Canal</th><th>Statut</th><th>Vu</th></tr></thead><tbody>' + html + '</tbody></table>';
   }
 
+  async function importGithubRelease() {
+    setBusy(el.importGithubReleaseButton, true);
+    try {
+      var result = await apiFetch("/api/admin/releases/import-github", { method: "POST", body: {} });
+      await loadData();
+      var release = result.release;
+      if (release) openReleaseDialog(release);
+      showToast(result.created ? "Release importée depuis GitHub" : "Release GitHub déjà connue — vous pouvez la configurer");
+    } catch (e) { showToast(e.message, true); }
+    finally { setBusy(el.importGithubReleaseButton, false); }
+  }
+
   function openReleaseDialog(release) {
     state.editingReleaseId = release ? release.id : "";
     el.releaseForm.reset();
-    el.releaseDialogMode.textContent = release ? "Modifier" : "Créer";
-    el.releaseDialogTitle.textContent = release ? ("v" + release.version) : "Nouvelle release";
+    el.releaseDialogMode.textContent = release ? "Configurer" : "Configurer";
+    el.releaseDialogTitle.textContent = release ? ("v" + release.version) : "Mise à jour";
     el.releaseId.value = release ? release.id : "";
     el.releaseVersion.value = release ? release.version : "";
-    el.releaseVersion.readOnly = Boolean(release);
+    el.releaseVersionDisplay.value = release ? ("v" + release.version) : "(importez depuis GitHub)";
     el.releaseChannel.value = release ? release.channel : "stable";
     el.releaseSeverity.value = release ? release.severity : "mandatory";
-    el.releaseSku.value = release ? (release.sku || "") : "premium_2026";
+    el.releaseSku.value = release ? (release.sku || "premium_2026") : "premium_2026";
     el.releaseRollout.value = release ? release.rollout_percent : 100;
-    el.releaseStatus.value = release ? release.status : "draft";
+    el.releaseStatus.value = release ? (release.status === "draft" ? "draft" : release.status === "yanked" ? "yanked" : "published") : "published";
     el.releaseNotes.value = release ? (release.notes || "") : "";
     el.releaseArtifactUrl.value = release ? (release.artifact_url || "") : "";
     el.releaseArtifactSignature.value = release ? (release.artifact_signature || "") : "";
     el.releaseMigrationRisk.value = release ? (release.migration_risk || "low") : "low";
+    var hasArtifacts = Boolean(el.releaseArtifactUrl.value && el.releaseArtifactSignature.value);
+    el.releaseAutoHint.textContent = hasArtifacts
+      ? ("Fichier et signature déjà présents pour v" + el.releaseVersion.value + ". Choisissez seulement le type et le déploiement.")
+      : "Importez d'abord depuis GitHub (bouton en haut), ou attendez le build CI après un tag.";
     el.releaseDialog.showModal();
   }
 
@@ -1005,18 +1008,25 @@ export const ADMIN_JS = `(function () {
     var btn = el.releaseForm.querySelector('button[type="submit"]');
     setBusy(btn, true);
     try {
+      if (!el.releaseVersion.value.trim()) {
+        throw new Error("Importez d'abord une release GitHub (version manquante).");
+      }
+      if (!el.releaseArtifactUrl.value.trim() || !el.releaseArtifactSignature.value.trim()) {
+        throw new Error("URL / signature manquantes. Utilisez « Importer depuis GitHub ».");
+      }
+      var severity = el.releaseSeverity.value;
       var body = {
         version: el.releaseVersion.value.trim(),
-        channel: el.releaseChannel.value,
-        severity: el.releaseSeverity.value,
-        sku: el.releaseSku.value.trim(),
+        channel: el.releaseChannel.value || "stable",
+        severity: severity,
+        sku: (severity === "paid" || severity === "paid_mandatory") ? (el.releaseSku.value.trim() || "premium_2026") : "",
         rollout_percent: parseInt(el.releaseRollout.value, 10) || 0,
         status: el.releaseStatus.value,
         notes: el.releaseNotes.value.trim(),
         artifact_url: el.releaseArtifactUrl.value.trim(),
         artifact_signature: el.releaseArtifactSignature.value.trim(),
-        migration_risk: el.releaseMigrationRisk.value,
-        backup_recommended: el.releaseMigrationRisk.value === "high",
+        migration_risk: el.releaseMigrationRisk.value || "low",
+        backup_recommended: (el.releaseMigrationRisk.value || "low") === "high",
       };
       if (state.editingReleaseId) {
         await apiFetch("/api/admin/releases/" + encodeURIComponent(state.editingReleaseId), { method: "PATCH", body: body });
@@ -1026,7 +1036,7 @@ export const ADMIN_JS = `(function () {
       el.releaseDialog.close();
       state.editingReleaseId = "";
       await loadData();
-      showToast("Release enregistrée");
+      showToast("Mise à jour enregistrée");
     } catch (err) { showToast(err.message, true); }
     finally { setBusy(btn, false); }
   }
@@ -1053,9 +1063,9 @@ export const ADMIN_JS = `(function () {
     if (!reg) { showToast("Inscription introuvable", true); return; }
     state.pendingEntitlementRegId = regId;
     el.entitlementRegId.value = regId;
-    el.entitlementRegLabel.textContent = (reg.full_name || "") + " — après paiement hors application";
+    el.entitlementRegLabel.textContent = (reg.full_name || "") + " — un clic après confirmation du paiement";
     el.entitlementSku.value = "premium_2026";
-    el.entitlementChannel.value = reg.update_channel || "stable";
+    el.entitlementChannel.value = "stable";
     el.entitlementNote.value = "";
     el.entitlementDialog.showModal();
   }
@@ -1392,7 +1402,11 @@ export const ADMIN_JS = `(function () {
     el.refreshButton.addEventListener("click", function () { loadData().then(function () { showToast("Actualisé"); }).catch(function (e) { showToast(e.message, true); }); });
     el.sidebarNav.addEventListener("click", function (e) { var n = e.target.closest(".nav-item"); if (n) setView(n.dataset.view); });
     el.newLicenseButtonAlt.addEventListener("click", function () { openLicenseDialog(""); });
-    el.newReleaseButton.addEventListener("click", function () { openReleaseDialog(null); });
+    el.importGithubReleaseButton.addEventListener("click", function () { importGithubRelease(); });
+    el.newReleaseButton.addEventListener("click", function () {
+      if (!(state.releases || []).length) { showToast("Importez d'abord depuis GitHub", true); return; }
+      openReleaseDialog(state.releases[0]);
+    });
     el.newKeyButton.addEventListener("click", function () { openKeyDialog(null); });
     el.newDoctorButton.addEventListener("click", function () { openDoctorDialog(null); });
     el.licenseForm.addEventListener("submit", saveLicense);

@@ -617,6 +617,88 @@ export async function evaluateUpdateCheck(body) {
   };
 }
 
+
+export async function importReleaseFromGitHub({ tag = "", createdBy = "" } = {}) {
+  const repo = cleanStr(process.env.GITHUB_DESKTOP_REPO || "Rayane3103/medismart-desktop", 200);
+  const token = cleanStr(process.env.GITHUB_RELEASES_TOKEN || process.env.GITHUB_TOKEN || process.env.GH_TOKEN, 200);
+  const headers = {
+    Accept: "application/vnd.github+json",
+    "User-Agent": "MediSmart-UpdateControl",
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+
+  const url = tag
+    ? `https://api.github.com/repos/${repo}/releases/tags/${encodeURIComponent(tag.startsWith("v") ? tag : `v${tag}`)}`
+    : `https://api.github.com/repos/${repo}/releases/latest`;
+
+  const res = await fetch(url, { headers });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const hint = !token
+      ? " Ajoutez GITHUB_RELEASES_TOKEN (classic PAT repo) sur le backend si le dépôt est privé."
+      : "";
+    return { error: (data.message || `GitHub ${res.status}`) + hint, status: res.status === 404 ? 404 : 502 };
+  }
+
+  const assets = Array.isArray(data.assets) ? data.assets : [];
+  const byName = Object.fromEntries(assets.map((a) => [a.name, a]));
+  let latestJson = null;
+  const latestAsset = assets.find((a) => a.name === "latest.json");
+  if (latestAsset) {
+    const lr = await fetch(latestAsset.browser_download_url, { headers });
+    if (lr.ok) latestJson = await lr.json().catch(() => null);
+  }
+
+  let artifactUrl = "";
+  let artifactSignature = "";
+  let version = cleanStr(data.tag_name || "", 40).replace(/^v/i, "");
+  let notes = cleanStr(data.body || data.name || "", 4000);
+
+  if (latestJson) {
+    version = cleanStr(latestJson.version || version, 40).replace(/^v/i, "");
+    notes = cleanStr(latestJson.notes || notes, 4000);
+    const plat = (latestJson.platforms || {})["windows-x86_64"] || Object.values(latestJson.platforms || {})[0];
+    if (plat) {
+      artifactUrl = cleanStr(plat.url, 1000);
+      artifactSignature = cleanStr(plat.signature, 8000);
+    }
+  }
+
+  if (!artifactUrl) {
+    const exe = assets.find((a) => /setup\.exe$/i.test(a.name) || /\.exe$/i.test(a.name));
+    if (exe) artifactUrl = exe.browser_download_url;
+  }
+  if (!artifactSignature) {
+    const sig = assets.find((a) => /\.sig$/i.test(a.name));
+    if (sig) {
+      const sr = await fetch(sig.browser_download_url, { headers });
+      if (sr.ok) artifactSignature = cleanStr(await sr.text(), 8000);
+    }
+  }
+
+  if (!parseSemver(version)) {
+    return { error: "Impossible de déterminer la version GitHub", status: 400 };
+  }
+  if (!artifactUrl || !artifactSignature) {
+    return {
+      error: "Release GitHub trouvée mais sans artefact/.sig (attendez la fin du workflow CI).",
+      status: 409,
+    };
+  }
+
+  return upsertReleaseFromBody({
+    version,
+    channel: "stable",
+    severity: "mandatory",
+    notes,
+    rollout_percent: 100,
+    artifact_url: artifactUrl,
+    artifact_signature: artifactSignature,
+    status: "draft",
+    migration_risk: "low",
+  }, { publish: false, createdBy: createdBy || "github-import" });
+}
+
 // ---------- HTTP handlers ----------
 export async function handleUpdatesPublicRoutes(req, res, path, ctx) {
   const { readJson, ok, err } = ctx;
@@ -678,6 +760,22 @@ export async function handleUpdatesAdminRoutes(req, res, path, ctx) {
 
   // CI publish can use UPDATE_PUBLISH_TOKEN without a full admin session when
   // called from handleUpdatesPublishRoute; this admin handler assumes session.
+
+
+  if (path === "/api/admin/releases/import-github" && req.method === "POST") {
+    const body = await readJson(req);
+    const result = await importReleaseFromGitHub({
+      tag: body.tag || "",
+      createdBy: ctx.adminUsername || "admin",
+    });
+    if (result.error) { err(res, result.status || 400, result.error); return true; }
+    ok(res, {
+      ok: true,
+      created: result.created,
+      release: publicReleaseState(result.release, { includeArtifacts: true }),
+    }, result.created ? 201 : 200);
+    return true;
+  }
 
   if (path === "/api/admin/releases" && req.method === "GET") {
     const rows = await listReleases();
