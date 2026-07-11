@@ -80,6 +80,7 @@ const DEFAULT_COSTS = {
 };
 
 // ---------- helpers ----------
+function uuid() { return crypto.randomUUID(); }
 function nowIso() { return new Date().toISOString(); }
 function today() { return new Date().toISOString().slice(0, 10); }
 
