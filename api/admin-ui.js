@@ -931,7 +931,7 @@ export const ADMIN_JS = `(function () {
     if (!el.releaseRows) return;
     var rows = state.releases || [];
     el.releaseCount.textContent = rows.length;
-    if (!rows.length) { el.releaseRows.innerHTML = '<div class="empty">Aucune release. Cliquez « Importer depuis GitHub » après un tag vX.Y.Z (build Actions terminé), ou attendez l'enregistrement automatique CI.</div>'; return; }
+    if (!rows.length) { el.releaseRows.innerHTML = '<div class="empty">Aucune release. Cliquez « Importer depuis GitHub » après un tag vX.Y.Z (build Actions terminé), ou attendez l’enregistrement automatique CI.</div>'; return; }
     var html = rows.map(function (r) {
       var sev = REL_SEVERITY[r.severity] || r.severity;
       var stCls = r.status === "published" ? "green" : r.status === "yanked" ? "red" : "amber";
