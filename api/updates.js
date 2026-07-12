@@ -722,8 +722,80 @@ export async function importReleaseFromGitHub({ tag = "", createdBy = "" } = {})
 }
 
 // ---------- HTTP handlers ----------
+
+// Tauri-updater manifest, evaluated PER DOCTOR. The desktop updater points its
+// endpoint here (instead of a static latest.json) so the server decides what
+// each install is told: mandatory releases for everyone, paid releases only
+// when the registration holds the release SKU. 200 + manifest when an update
+// is offered, 204 when there is nothing for this doctor.
+async function handleUpdatesManifest(req, res, ctx) {
+  const { err } = ctx;
+  if (req.method !== "GET") { err(res, 405, "Method not allowed"); return true; }
+  try {
+    const url = new URL(req.url || "/", "http://local");
+    const currentVersion =
+      cleanStr(url.searchParams.get("current_version"), 40).replace(/^v/i, "") ||
+      cleanStr(req.headers["x-current-version"], 40).replace(/^v/i, "") ||
+      "0.0.1";
+    const identity = {
+      current_version: parseSemver(currentVersion) ? currentVersion : "0.0.1",
+      client_registration_id: cleanStr(req.headers["x-client-registration-id"], 100),
+      registration_id: cleanStr(req.headers["x-registration-id"], 100),
+    };
+
+    let manifest = null;
+    const result = await evaluateUpdateCheck(identity);
+    if (result.response?.available && result.response.tauri?.url) {
+      manifest = result.response.tauri;
+    } else if (result.error) {
+      // Unknown/unsynced registration: mandatory security releases still apply
+      // to every install (no entitlement, full-rollout releases only).
+      const release = await getLatestPublishedRelease("stable");
+      if (
+        release &&
+        release.severity === "mandatory" &&
+        Number(release.rollout_percent ?? 100) >= 100 &&
+        isNewerVersion(release.version, identity.current_version)
+      ) {
+        manifest = {
+          version: release.version,
+          notes: release.notes,
+          pub_date: release.pub_date,
+          url: release.artifact_url,
+          signature: release.artifact_signature,
+        };
+      }
+    }
+
+    if (!manifest || !manifest.url || !manifest.signature) {
+      res.statusCode = 204;
+      res.end();
+      return true;
+    }
+    const body = JSON.stringify({
+      version: manifest.version,
+      notes: manifest.notes || "",
+      pub_date: manifest.pub_date || new Date().toISOString(),
+      platforms: {
+        "windows-x86_64": { signature: manifest.signature, url: manifest.url },
+      },
+    });
+    res.statusCode = 200;
+    res.setHeader("Content-Type", "application/json; charset=utf-8");
+    res.setHeader("Cache-Control", "no-store");
+    res.end(body);
+  } catch (e) {
+    err(res, 500, e.message || "Erreur manifest update");
+  }
+  return true;
+}
+
 export async function handleUpdatesPublicRoutes(req, res, path, ctx) {
   const { readJson, ok, err } = ctx;
+
+  if (path === "/api/updates/manifest") {
+    return handleUpdatesManifest(req, res, ctx);
+  }
 
   if (path === "/api/updates/check") {
     if (req.method !== "POST") { err(res, 405, "Method not allowed"); return true; }
