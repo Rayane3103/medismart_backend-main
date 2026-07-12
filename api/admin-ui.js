@@ -931,7 +931,7 @@ export const ADMIN_JS = `(function () {
     if (!el.releaseRows) return;
     var rows = state.releases || [];
     el.releaseCount.textContent = rows.length;
-    if (!rows.length) { el.releaseRows.innerHTML = '<div class="empty">Aucune release. Créez-en une ou publiez via CI (tag GitHub).</div>'; return; }
+    if (!rows.length) { el.releaseRows.innerHTML = '<div class="empty">Aucune release. Cliquez « Importer depuis GitHub » après un tag vX.Y.Z (build Actions terminé), ou attendez l'enregistrement automatique CI.</div>'; return; }
     var html = rows.map(function (r) {
       var sev = REL_SEVERITY[r.severity] || r.severity;
       var stCls = r.status === "published" ? "green" : r.status === "yanked" ? "red" : "amber";
@@ -968,15 +968,25 @@ export const ADMIN_JS = `(function () {
   }
 
   async function importGithubRelease() {
+    if (!el.importGithubReleaseButton) {
+      alert("Bouton Import introuvable — rechargez la page (Ctrl+F5).");
+      return;
+    }
     setBusy(el.importGithubReleaseButton, true);
+    showToast("Import GitHub en cours…");
     try {
       var result = await apiFetch("/api/admin/releases/import-github", { method: "POST", body: {} });
       await loadData();
       var release = result.release;
       if (release) openReleaseDialog(release);
-      showToast(result.created ? "Release importée depuis GitHub" : "Release GitHub déjà connue — vous pouvez la configurer");
-    } catch (e) { showToast(e.message, true); }
-    finally { setBusy(el.importGithubReleaseButton, false); }
+      showToast(result.created ? "Release importée depuis GitHub" : "Release déjà connue — configurez-la");
+    } catch (e) {
+      var msg = (e && e.message) ? e.message : "Import impossible";
+      showToast(msg, true);
+      alert(msg);
+    } finally {
+      setBusy(el.importGithubReleaseButton, false);
+    }
   }
 
   function openReleaseDialog(release) {
@@ -1402,7 +1412,8 @@ export const ADMIN_JS = `(function () {
     el.refreshButton.addEventListener("click", function () { loadData().then(function () { showToast("Actualisé"); }).catch(function (e) { showToast(e.message, true); }); });
     el.sidebarNav.addEventListener("click", function (e) { var n = e.target.closest(".nav-item"); if (n) setView(n.dataset.view); });
     el.newLicenseButtonAlt.addEventListener("click", function () { openLicenseDialog(""); });
-    el.importGithubReleaseButton.addEventListener("click", function () { importGithubRelease(); });
+    if (el.importGithubReleaseButton) el.importGithubReleaseButton.addEventListener("click", function () { importGithubRelease(); });
+    else console.warn("importGithubReleaseButton missing");
     el.newReleaseButton.addEventListener("click", function () {
       if (!(state.releases || []).length) { showToast("Importez d'abord depuis GitHub", true); return; }
       openReleaseDialog(state.releases[0]);

@@ -631,13 +631,35 @@ export async function importReleaseFromGitHub({ tag = "", createdBy = "" } = {})
     ? `https://api.github.com/repos/${repo}/releases/tags/${encodeURIComponent(tag.startsWith("v") ? tag : `v${tag}`)}`
     : `https://api.github.com/repos/${repo}/releases/latest`;
 
-  const res = await fetch(url, { headers });
-  const data = await res.json().catch(() => ({}));
+  let res = await fetch(url, { headers });
+  let data = await res.json().catch(() => ({}));
+
+  // No "latest" yet: try listing releases, or return a clear operator message.
+  if (!res.ok && !tag) {
+    const listRes = await fetch(`https://api.github.com/repos/${repo}/releases?per_page=5`, { headers });
+    const list = await listRes.json().catch(() => []);
+    if (listRes.ok && Array.isArray(list) && list.length > 0) {
+      data = list[0];
+      res = { ok: true, status: 200 };
+    } else if (listRes.ok && Array.isArray(list) && list.length === 0) {
+      return {
+        error: "Aucune release GitHub pour l'instant. Sur le PC du projet, créez un tag (ex: git tag v2.2.0 && git push origin v2.2.0), attendez la fin du build Actions, puis réessayez.",
+        status: 404,
+      };
+    }
+  }
+
   if (!res.ok) {
     const hint = !token
-      ? " Ajoutez GITHUB_RELEASES_TOKEN (classic PAT repo) sur le backend si le dépôt est privé."
+      ? " Ajoutez GITHUB_RELEASES_TOKEN (PAT avec accès repo) sur Vercel/Render — le dépôt desktop est privé."
       : "";
-    return { error: (data.message || `GitHub ${res.status}`) + hint, status: res.status === 404 ? 404 : 502 };
+    if (res.status === 404) {
+      return {
+        error: "Release GitHub introuvable." + hint + " Vérifiez qu'un tag vX.Y.Z a bien été publié avec des fichiers (.exe, .sig, latest.json).",
+        status: 404,
+      };
+    }
+    return { error: (data.message || `GitHub ${res.status}`) + hint, status: 502 };
   }
 
   const assets = Array.isArray(data.assets) ? data.assets : [];
