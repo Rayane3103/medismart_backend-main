@@ -619,7 +619,10 @@ export async function evaluateUpdateCheck(body) {
 
 
 export async function importReleaseFromGitHub({ tag = "", createdBy = "" } = {}) {
-  const repo = cleanStr(process.env.GITHUB_DESKTOP_REPO || "Rayane3103/medismart-desktop", 200);
+  // Import from the PUBLIC releases repo: its assets are downloadable (correct
+  // per-doctor artifact URLs + signature) and need no token. The private source
+  // repo's assets are unreachable by installed apps, so never import from it.
+  const repo = cleanStr(process.env.GITHUB_RELEASES_REPO || "Rayane3103/medismart-desktop-releases", 200);
   const token = cleanStr(process.env.GITHUB_RELEASES_TOKEN || process.env.GITHUB_TOKEN || process.env.GH_TOKEN, 200);
   const headers = {
     Accept: "application/vnd.github+json",
