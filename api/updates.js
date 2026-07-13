@@ -711,16 +711,19 @@ export async function importReleaseFromGitHub({ tag = "", createdBy = "" } = {})
     };
   }
 
+  // Refresh artifact URL + signature from GitHub. Do NOT force severity/status/
+  // rollout: for an EXISTING release upsert preserves them (so re-importing a
+  // published or paid release never downgrades or re-classifies it); for a NEW
+  // release upsert defaults to mandatory + draft, which the admin then reviews.
+  const existingId = await redis.get(`release:version:stable:${version}`);
+  const existing = existingId ? await getRelease(existingId) : null;
   return upsertReleaseFromBody({
     version,
     channel: "stable",
-    severity: "mandatory",
     notes,
-    rollout_percent: 100,
     artifact_url: artifactUrl,
     artifact_signature: artifactSignature,
-    status: "draft",
-    migration_risk: "low",
+    ...(existing ? {} : { severity: "mandatory", rollout_percent: 100, status: "draft", migration_risk: "low" }),
   }, { publish: false, createdBy: createdBy || "github-import" });
 }
 
