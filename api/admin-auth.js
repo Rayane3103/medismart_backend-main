@@ -1,5 +1,5 @@
-// Admin sign-in: username + password pairs from ADMIN_USERS env.
-// Format: mouad:Mouad123,rayane:24052003
+// Admin sign-in: username + password pairs from the ADMIN_USERS env var.
+// Format: "user1:pass1,user2:pass2" (configured in Vercel, never committed).
 // Legacy ADMIN_TOKEN is still accepted as a bearer token for scripts/tests.
 
 import crypto from "node:crypto";
