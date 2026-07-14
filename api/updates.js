@@ -502,6 +502,37 @@ function deny(reason, extra = {}) {
   };
 }
 
+// Wall-walk release selection. Climbs published releases newer than
+// currentVersion in ascending order. A premium release (severity paid/
+// paid_mandatory) is a wall the doctor passes only if ownedSkus includes its
+// sku; otherwise they are frozen at their current version until they pay.
+// Returns the highest reachable release that is in this doctor's rollout.
+//   { upToDate }         -> nothing newer published
+//   { blockedBy }        -> frozen: next release is an unpaid premium wall
+//   { target }           -> offer this release
+//   { notInRollout }     -> reachable ceiling exists but not yet rolled out here
+async function selectReachableRelease({ channel, currentVersion, ownedSkus, registrationId }) {
+  const isPremium = (r) => r.severity === "paid" || r.severity === "paid_mandatory";
+  const owns = (sku) => Boolean(sku) && ownedSkus.includes(sku);
+  const published = (await listReleases())
+    .filter((r) => r.channel === channel && r.status === "published"
+      && parseSemver(r.version) && isNewerVersion(r.version, currentVersion))
+    .sort((a, b) => compareSemver(a.version, b.version));
+  if (!published.length) return { upToDate: true };
+
+  let ceilingIdx = -1;
+  let blockedBy = null;
+  for (let i = 0; i < published.length; i += 1) {
+    if (isPremium(published[i]) && !owns(published[i].sku)) { blockedBy = published[i]; break; }
+    ceilingIdx = i;
+  }
+  if (ceilingIdx < 0) return { blockedBy };
+  for (let i = ceilingIdx; i >= 0; i -= 1) {
+    if (inRollout(published[i], registrationId)) return { target: published[i] };
+  }
+  return { notInRollout: published[ceilingIdx] };
+}
+
 export async function evaluateUpdateCheck(body) {
   const currentVersion = cleanStr(body.current_version || body.app_version, 40).replace(/^v/i, "");
   if (!parseSemver(currentVersion)) {
@@ -517,63 +548,52 @@ export async function evaluateUpdateCheck(body) {
     ? body.channel
     : (UPDATE_CHANNELS.includes(registration.update_channel) ? registration.update_channel : "stable");
 
-  const release = await getLatestPublishedRelease(requestedChannel);
-  if (!release) {
-    return {
-      response: deny("no_published_release", {
-        channel: requestedChannel,
-        current_version: currentVersion,
-        entitlement: { required: false, granted: true, skus: [] },
-      }),
-    };
-  }
+  // Wall-walk: a premium release freezes doctors who have not paid for it.
+  const entitlements = await listEntitlementsForRegistration(registration.id);
+  const ownedSkus = entitlements.map((e) => e.sku);
+  const sel = await selectReachableRelease({
+    channel: requestedChannel,
+    currentVersion,
+    ownedSkus,
+    registrationId: registration.id,
+  });
 
-  if (!isNewerVersion(release.version, currentVersion)) {
+  if (sel.upToDate) {
     return {
       response: deny("up_to_date", {
         channel: requestedChannel,
         current_version: currentVersion,
-        latest_version: release.version,
-        entitlement: { required: false, granted: true, skus: [] },
+        entitlement: { required: false, granted: true, skus: ownedSkus },
       }),
     };
   }
-
-  if (!inRollout(release, registration.id)) {
-    return {
-      response: deny("not_in_rollout", {
-        channel: requestedChannel,
-        current_version: currentVersion,
-        latest_version: release.version,
-        severity: release.severity,
-        entitlement: { required: false, granted: true, skus: [] },
-      }),
-    };
-  }
-
-  const needsEntitlement = release.severity === "paid" || release.severity === "paid_mandatory";
-  const entitlements = await listEntitlementsForRegistration(registration.id);
-  const granted = needsEntitlement
-    ? await hasActiveEntitlement(registration.id, release.sku)
-    : true;
-
-  if (needsEntitlement && !granted) {
+  if (sel.blockedBy) {
+    // Frozen: the next release is a premium wall this doctor has not paid for.
     return {
       response: deny("entitlement_required", {
         channel: requestedChannel,
         current_version: currentVersion,
-        latest_version: release.version,
-        severity: release.severity,
-        sku: release.sku,
-        notes: release.notes,
-        entitlement: {
-          required: true,
-          granted: false,
-          skus: entitlements.map((e) => e.sku),
-        },
+        latest_version: sel.blockedBy.version,
+        severity: sel.blockedBy.severity,
+        sku: sel.blockedBy.sku,
+        notes: sel.blockedBy.notes,
+        entitlement: { required: true, granted: false, skus: ownedSkus },
       }),
     };
   }
+  if (!sel.target) {
+    return {
+      response: deny("not_in_rollout", {
+        channel: requestedChannel,
+        current_version: currentVersion,
+        latest_version: sel.notInRollout ? sel.notInRollout.version : currentVersion,
+        entitlement: { required: false, granted: true, skus: ownedSkus },
+      }),
+    };
+  }
+
+  const release = sel.target;
+  const needsEntitlement = release.severity === "paid" || release.severity === "paid_mandatory";
 
   return {
     response: {
@@ -754,21 +774,22 @@ async function handleUpdatesManifest(req, res, ctx) {
     if (result.response?.available && result.response.tauri?.url) {
       manifest = result.response.tauri;
     } else if (result.error) {
-      // Unknown/unsynced registration: mandatory security releases still apply
-      // to every install (no entitlement, full-rollout releases only).
-      const release = await getLatestPublishedRelease("stable");
-      if (
-        release &&
-        release.severity === "mandatory" &&
-        Number(release.rollout_percent ?? 100) >= 100 &&
-        isNewerVersion(release.version, identity.current_version)
-      ) {
+      // Unknown/unsynced registration: treat as owning no SKUs and wall-walk,
+      // so it gets free (mandatory) updates up to the first premium wall and
+      // never receives premium artifacts.
+      const sel = await selectReachableRelease({
+        channel: "stable",
+        currentVersion: identity.current_version,
+        ownedSkus: [],
+        registrationId: "",
+      });
+      if (sel.target) {
         manifest = {
-          version: release.version,
-          notes: release.notes,
-          pub_date: release.pub_date,
-          url: release.artifact_url,
-          signature: release.artifact_signature,
+          version: sel.target.version,
+          notes: sel.target.notes,
+          pub_date: sel.target.pub_date,
+          url: sel.target.artifact_url,
+          signature: sel.target.artifact_signature,
         };
       }
     }
