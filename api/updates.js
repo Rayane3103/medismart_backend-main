@@ -502,33 +502,39 @@ function deny(reason, extra = {}) {
   };
 }
 
-// Release selection: offer the HIGHEST published release the doctor can access.
-// A release is accessible if it is free (mandatory) OR premium-and-owned. So a
-// premium release freezes non-payers only while it is the top; once a FREE
-// release is published above it, everyone can jump to that free release (its
-// premium features become free by the publisher's deliberate choice).
+// Release selection for an EXISTING doctor's auto-updater (strict walls).
+// Climbs published releases newer than the doctor's version in order. A premium
+// release (severity paid/paid_mandatory) is a hard wall passable only if the
+// doctor owns its sku. A doctor stuck below an unpaid premium wall stays frozen
+// at their current version even when newer FREE versions are published above it
+// -- until an admin grants the entitlement ("opens the wall"), after which they
+// jump to the highest reachable (latest) version. (New doctors don't use this;
+// the landing-page download always serves the absolute latest.)
 //   { upToDate }     -> nothing newer published
-//   { target }       -> offer this release (highest accessible, in rollout)
-//   { blockedBy }    -> frozen: nothing accessible above (all newer are premium)
-//   { notInRollout } -> accessible release exists but not yet rolled out here
+//   { target }       -> offer this release (highest reachable below any wall)
+//   { blockedBy }    -> frozen: the next release is an unpaid premium wall
+//   { notInRollout } -> reachable ceiling exists but not yet rolled out here
 async function selectReachableRelease({ channel, currentVersion, ownedSkus, registrationId }) {
   const isPremium = (r) => r.severity === "paid" || r.severity === "paid_mandatory";
   const owns = (sku) => Boolean(sku) && ownedSkus.includes(sku);
-  const accessible = (r) => !isPremium(r) || owns(r.sku);
   const published = (await listReleases())
     .filter((r) => r.channel === channel && r.status === "published"
       && parseSemver(r.version) && isNewerVersion(r.version, currentVersion))
-    .sort((a, b) => compareSemver(b.version, a.version)); // highest first
+    .sort((a, b) => compareSemver(a.version, b.version)); // ascending
+
   if (!published.length) return { upToDate: true };
 
+  let ceilingIdx = -1;
   let blockedBy = null;
-  for (const r of published) {
-    if (!accessible(r)) { if (!blockedBy) blockedBy = r; continue; }
-    if (!inRollout(r, registrationId)) continue;
-    return { target: r };
+  for (let i = 0; i < published.length; i += 1) {
+    if (isPremium(published[i]) && !owns(published[i].sku)) { blockedBy = published[i]; break; }
+    ceilingIdx = i;
   }
-  if (blockedBy) return { blockedBy }; // all newer releases are unpaid premium
-  return { notInRollout: published[0] };
+  if (ceilingIdx < 0) return { blockedBy };
+  for (let i = ceilingIdx; i >= 0; i -= 1) {
+    if (inRollout(published[i], registrationId)) return { target: published[i] };
+  }
+  return { notInRollout: published[ceilingIdx] };
 }
 
 export async function evaluateUpdateCheck(body) {
@@ -827,13 +833,10 @@ export async function handleUpdatesPublicRoutes(req, res, path, ctx) {
   // serves the newest free baseline and can never hand out a premium build.
   if (path === "/api/download/latest") {
     if (req.method !== "GET") { err(res, 405, "Method not allowed"); return true; }
-    const sel = await selectReachableRelease({
-      channel: "stable",
-      currentVersion: "0.0.0",
-      ownedSkus: [],
-      registrationId: "",
-    });
-    const target = sel && sel.target;
+    // New doctors (landing page) always get the absolute latest version, free -
+    // even a premium one. The paid wall only applies to EXISTING doctors
+    // upgrading across it (handled in the manifest), not to fresh installs.
+    const target = await getLatestPublishedRelease("stable");
     if (!target || !target.artifact_url) { err(res, 404, "Aucun installateur disponible"); return true; }
     res.statusCode = 302;
     res.setHeader("Location", target.artifact_url);
