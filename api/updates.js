@@ -824,6 +824,26 @@ export async function handleUpdatesPublicRoutes(req, res, path, ctx) {
     return handleUpdatesManifest(req, res, ctx);
   }
 
+  // Public download for the landing page: 302-redirect to the latest FREE
+  // installer. Uses the same wall-walk with no entitlements, so it always
+  // serves the newest free baseline and can never hand out a premium build.
+  if (path === "/api/download/latest") {
+    if (req.method !== "GET") { err(res, 405, "Method not allowed"); return true; }
+    const sel = await selectReachableRelease({
+      channel: "stable",
+      currentVersion: "0.0.0",
+      ownedSkus: [],
+      registrationId: "",
+    });
+    const target = sel && sel.target;
+    if (!target || !target.artifact_url) { err(res, 404, "Aucun installateur disponible"); return true; }
+    res.statusCode = 302;
+    res.setHeader("Location", target.artifact_url);
+    res.setHeader("Cache-Control", "no-store");
+    res.end();
+    return true;
+  }
+
   if (path === "/api/updates/check") {
     if (req.method !== "POST") { err(res, 405, "Method not allowed"); return true; }
     try {
