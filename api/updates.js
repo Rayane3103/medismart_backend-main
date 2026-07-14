@@ -502,35 +502,33 @@ function deny(reason, extra = {}) {
   };
 }
 
-// Wall-walk release selection. Climbs published releases newer than
-// currentVersion in ascending order. A premium release (severity paid/
-// paid_mandatory) is a wall the doctor passes only if ownedSkus includes its
-// sku; otherwise they are frozen at their current version until they pay.
-// Returns the highest reachable release that is in this doctor's rollout.
-//   { upToDate }         -> nothing newer published
-//   { blockedBy }        -> frozen: next release is an unpaid premium wall
-//   { target }           -> offer this release
-//   { notInRollout }     -> reachable ceiling exists but not yet rolled out here
+// Release selection: offer the HIGHEST published release the doctor can access.
+// A release is accessible if it is free (mandatory) OR premium-and-owned. So a
+// premium release freezes non-payers only while it is the top; once a FREE
+// release is published above it, everyone can jump to that free release (its
+// premium features become free by the publisher's deliberate choice).
+//   { upToDate }     -> nothing newer published
+//   { target }       -> offer this release (highest accessible, in rollout)
+//   { blockedBy }    -> frozen: nothing accessible above (all newer are premium)
+//   { notInRollout } -> accessible release exists but not yet rolled out here
 async function selectReachableRelease({ channel, currentVersion, ownedSkus, registrationId }) {
   const isPremium = (r) => r.severity === "paid" || r.severity === "paid_mandatory";
   const owns = (sku) => Boolean(sku) && ownedSkus.includes(sku);
+  const accessible = (r) => !isPremium(r) || owns(r.sku);
   const published = (await listReleases())
     .filter((r) => r.channel === channel && r.status === "published"
       && parseSemver(r.version) && isNewerVersion(r.version, currentVersion))
-    .sort((a, b) => compareSemver(a.version, b.version));
+    .sort((a, b) => compareSemver(b.version, a.version)); // highest first
   if (!published.length) return { upToDate: true };
 
-  let ceilingIdx = -1;
   let blockedBy = null;
-  for (let i = 0; i < published.length; i += 1) {
-    if (isPremium(published[i]) && !owns(published[i].sku)) { blockedBy = published[i]; break; }
-    ceilingIdx = i;
+  for (const r of published) {
+    if (!accessible(r)) { if (!blockedBy) blockedBy = r; continue; }
+    if (!inRollout(r, registrationId)) continue;
+    return { target: r };
   }
-  if (ceilingIdx < 0) return { blockedBy };
-  for (let i = ceilingIdx; i >= 0; i -= 1) {
-    if (inRollout(published[i], registrationId)) return { target: published[i] };
-  }
-  return { notInRollout: published[ceilingIdx] };
+  if (blockedBy) return { blockedBy }; // all newer releases are unpaid premium
+  return { notInRollout: published[0] };
 }
 
 export async function evaluateUpdateCheck(body) {
