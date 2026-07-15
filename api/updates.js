@@ -1064,13 +1064,20 @@ export async function handleUpdatesPublishRoute(req, res, path, ctx) {
 
   try {
     const body = await readJson(req);
-    const result = await upsertReleaseFromBody({
+    // Review gate: an explicit draft request (CI sends status:"draft") registers
+    // the release WITHOUT publishing, so a human reviews/tests and clicks Publier
+    // before any doctor receives it. A draft request never downgrades an already
+    // published release (new -> draft; existing -> keep its status, refresh
+    // artifact). Direct admin calls still publish by default.
+    const asDraft = body.status === "draft" || body.publish === false;
+    const payload = {
       ...body,
       channel: body.channel || "stable",
       severity: body.severity || "mandatory",
-      status: "published",
-    }, {
-      publish: true,
+    };
+    if (asDraft) delete payload.status; else payload.status = "published";
+    const result = await upsertReleaseFromBody(payload, {
+      publish: !asDraft,
       createdBy: hasAdmin ? (ctx.adminUsername || "admin") : "ci",
     });
     if (result.error) { err(res, result.status || 400, result.error); return true; }
