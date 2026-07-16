@@ -12,7 +12,7 @@
 //   update:signing_secret                  HMAC secret (unless UPDATE_SIGNING_SECRET / LICENSE_SIGNING_SECRET)
 
 import crypto from "node:crypto";
-import { redis } from "./redis.js";
+import { redis, mgetAll, mgetExisting, smembersAll, cached, invalidate } from "./redis.js";
 import {
   findRegistrationByClientId,
   getRegistration,
@@ -194,21 +194,24 @@ export async function saveRelease(release) {
   if (row.version && row.channel) {
     await redis.set(`release:version:${row.channel}:${row.version}`, row.id);
   }
+  // Must drop the cached list before refreshChannelLatest re-reads it, or the
+  // channel pointer would be recomputed from the snapshot taken before this save.
+  invalidate("releases", "update_stats");
   await refreshChannelLatest(row.channel);
   return row;
 }
 
 export async function listReleases() {
-  const ids = (await redis.smembers("releases:index")) || [];
-  const rows = [];
-  for (const id of ids) {
-    const release = await getRelease(id);
-    if (release) rows.push(release);
-  }
-  return rows.sort((a, b) => {
-    const byVersion = compareSemver(b.version, a.version);
-    if (byVersion) return byVersion;
-    return (b.updated_at || "").localeCompare(a.updated_at || "");
+  return cached("releases", async () => {
+    const ids = (await redis.smembers("releases:index")) || [];
+    const stored = await mgetExisting(ids.map((id) => `release:${id}`));
+    return stored
+      .map((row) => ensureReleaseDefaults({ ...row }))
+      .sort((a, b) => {
+        const byVersion = compareSemver(b.version, a.version);
+        if (byVersion) return byVersion;
+        return (b.updated_at || "").localeCompare(a.updated_at || "");
+      });
   });
 }
 
@@ -328,12 +331,35 @@ export async function listEntitlementsForRegistration(registrationId) {
   const regId = cleanStr(registrationId, 100);
   if (!regId) return [];
   const skus = (await redis.smembers(`entitlements:registration:${regId}`)) || [];
-  const rows = [];
-  for (const sku of skus) {
-    const row = await redis.get(entitlementKey(regId, sku));
-    if (row && row.status !== "revoked") rows.push(row);
+  const rows = await mgetExisting(skus.map((sku) => entitlementKey(regId, sku)));
+  return rows
+    .filter((row) => row.status !== "revoked")
+    .sort((a, b) => (b.granted_at || "").localeCompare(a.granted_at || ""));
+}
+
+// Same data for many registrations at once. Asking per registration costs two
+// round-trips each, which is what made the updates dashboard slow; this stays
+// at two regardless of how many doctors are registered.
+export async function listEntitlementsForRegistrations(registrationIds) {
+  const ids = (registrationIds || []).map((id) => cleanStr(id, 100)).filter(Boolean);
+  if (!ids.length) return new Map();
+
+  const skuLists = await smembersAll(ids.map((id) => `entitlements:registration:${id}`));
+  const wanted = [];
+  ids.forEach((id, i) => {
+    (skuLists[i] || []).forEach((sku) => wanted.push({ id, key: entitlementKey(id, sku) }));
+  });
+
+  const rows = await mgetAll(wanted.map((w) => w.key));
+  const byRegistration = new Map(ids.map((id) => [id, []]));
+  wanted.forEach((w, i) => {
+    const row = rows[i];
+    if (row && row.status !== "revoked") byRegistration.get(w.id).push(row);
+  });
+  for (const list of byRegistration.values()) {
+    list.sort((a, b) => (b.granted_at || "").localeCompare(a.granted_at || ""));
   }
-  return rows.sort((a, b) => (b.granted_at || "").localeCompare(a.granted_at || ""));
+  return byRegistration;
 }
 
 export async function grantEntitlement({ registrationId, sku, grantedBy = "", note = "" }) {
@@ -357,6 +383,7 @@ export async function grantEntitlement({ registrationId, sku, grantedBy = "", no
   };
   await redis.set(entitlementKey(regId, productSku), row);
   await redis.sadd(`entitlements:registration:${regId}`, productSku);
+  invalidate("update_stats");
 
   const reg = ensureRegistrationDefaults({ ...registration });
   const skus = new Set(Array.isArray(reg.update_skus) ? reg.update_skus : []);
@@ -380,6 +407,7 @@ export async function revokeEntitlement({ registrationId, sku, revokedBy = "" })
     updated_at: nowIso(),
   };
   await redis.set(entitlementKey(regId, productSku), row);
+  invalidate("update_stats");
 
   const registration = await getRegistration(regId);
   if (registration) {
@@ -428,6 +456,7 @@ export async function saveHeartbeat(registrationId, payload) {
   };
   await redis.set(`update:heartbeat:${regId}`, row);
   await redis.sadd("update:heartbeats:index", regId);
+  invalidate("heartbeats", "update_stats");
 
   const registration = await getRegistration(regId);
   if (registration) {
@@ -442,23 +471,26 @@ export async function saveHeartbeat(registrationId, payload) {
 }
 
 export async function listHeartbeats() {
-  const ids = (await redis.smembers("update:heartbeats:index")) || [];
-  const rows = [];
-  for (const id of ids) {
-    const row = await redis.get(`update:heartbeat:${id}`);
-    if (row) rows.push(row);
-  }
-  return rows.sort((a, b) => (b.reported_at || "").localeCompare(a.reported_at || ""));
+  return cached("heartbeats", async () => {
+    const ids = (await redis.smembers("update:heartbeats:index")) || [];
+    const rows = await mgetExisting(ids.map((id) => `update:heartbeat:${id}`));
+    return rows.sort((a, b) => (b.reported_at || "").localeCompare(a.reported_at || ""));
+  });
 }
 
 export async function updateStats() {
-  const releases = await listReleases();
-  const heartbeats = await listHeartbeats();
-  const registrations = await listRegistrations();
+  return cached("update_stats", computeUpdateStats);
+}
+
+async function computeUpdateStats() {
+  const [releases, heartbeats, registrations] = await Promise.all([
+    listReleases(),
+    listHeartbeats(),
+    listRegistrations(),
+  ]);
+  const entitlements = await listEntitlementsForRegistrations(registrations.map((r) => r.id));
   let entitlementsActive = 0;
-  for (const reg of registrations) {
-    entitlementsActive += (await listEntitlementsForRegistration(reg.id)).length;
-  }
+  for (const list of entitlements.values()) entitlementsActive += list.length;
   const latestStable = await getLatestPublishedRelease("stable");
   const onLatest = latestStable
     ? heartbeats.filter((h) => h.app_version === latestStable.version).length
@@ -969,6 +1001,7 @@ export async function handleUpdatesAdminRoutes(req, res, path, ctx) {
     if (release.channel && release.version) {
       await redis.del(`release:version:${release.channel}:${release.version}`);
     }
+    invalidate("releases", "update_stats");
     await refreshChannelLatest(release.channel);
     ok(res, { ok: true });
     return true;

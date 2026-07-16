@@ -27,6 +27,15 @@ export function adminUsersConfigured() {
   return parseAdminUsers().size > 0 || Boolean(String(process.env.ADMIN_TOKEN || "").trim());
 }
 
+// Compares secrets in constant time. Hashing first keeps timingSafeEqual happy
+// with different-length inputs and stops the comparison from leaking how much
+// of a guessed password was correct.
+function secretsMatch(a, b) {
+  const ha = crypto.createHash("sha256").update(String(a ?? "")).digest();
+  const hb = crypto.createHash("sha256").update(String(b ?? "")).digest();
+  return crypto.timingSafeEqual(ha, hb);
+}
+
 export async function adminLogin(username, password) {
   const users = parseAdminUsers();
   const user = String(username || "").trim().toLowerCase();
@@ -38,7 +47,7 @@ export async function adminLogin(username, password) {
     return { ok: false, error: "Aucun compte administrateur configuré (ADMIN_USERS)." };
   }
   const expected = users.get(user);
-  if (!expected || expected !== pass) {
+  if (!expected || !secretsMatch(expected, pass)) {
     return { ok: false, error: "Identifiants incorrects." };
   }
   const token = crypto.randomBytes(32).toString("hex");
@@ -73,7 +82,7 @@ export async function verifyAdminRequest(req) {
 
   // Legacy single shared token (scripts, old deployments).
   const legacy = String(process.env.ADMIN_TOKEN || "").trim();
-  if (legacy && got === legacy) {
+  if (legacy && secretsMatch(legacy, got)) {
     return { username: "admin", display_name: "Admin", legacy: true };
   }
 

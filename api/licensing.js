@@ -11,7 +11,7 @@
 //   license:signing_secret             HMAC secret (unless LICENSE_SIGNING_SECRET env)
 
 import crypto from "node:crypto";
-import { redis } from "./redis.js";
+import { redis, mgetExisting, cached, invalidate } from "./redis.js";
 
 export const LICENSE_TYPES = ["trial", "lifetime"];
 export const LICENSE_STATUSES = ["generated", "used", "revoked"];
@@ -138,6 +138,7 @@ export async function saveRegistration(reg) {
   if (reg.client_registration_id) {
     await redis.set(`registration:client:${reg.client_registration_id}`, reg.id);
   }
+  invalidate("registrations");
 }
 
 export async function findRegistrationByClientId(clientId) {
@@ -148,13 +149,13 @@ export async function findRegistrationByClientId(clientId) {
 }
 
 export async function listRegistrations() {
-  const ids = (await redis.smembers("registrations:index")) || [];
-  const rows = [];
-  for (const id of ids) {
-    const reg = await getRegistration(id);
-    if (reg) rows.push(ensureRegistrationDefaults({ ...reg }));
-  }
-  return rows.sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
+  return cached("registrations", async () => {
+    const ids = (await redis.smembers("registrations:index")) || [];
+    const rows = await mgetExisting(ids.map((id) => `registration:${id}`));
+    return rows
+      .map((reg) => ensureRegistrationDefaults({ ...reg }))
+      .sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
+  });
 }
 
 function publicRegistrationState(reg) {
@@ -215,6 +216,7 @@ export async function saveLicense(license) {
   if (license.key_hash) {
     await redis.set(`license:hash:${license.key_hash}`, license.id);
   }
+  invalidate("licenses");
 }
 
 export async function findLicenseByKey(rawKey) {
@@ -224,13 +226,13 @@ export async function findLicenseByKey(rawKey) {
 }
 
 export async function listLicenses() {
-  const ids = (await redis.smembers("licenses:index")) || [];
-  const rows = [];
-  for (const id of ids) {
-    const license = await getLicense(id);
-    if (license) rows.push(ensureLicenseDefaults({ ...license }));
-  }
-  return rows.sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
+  return cached("licenses", async () => {
+    const ids = (await redis.smembers("licenses:index")) || [];
+    const rows = await mgetExisting(ids.map((id) => `license:${id}`));
+    return rows
+      .map((license) => ensureLicenseDefaults({ ...license }))
+      .sort((a, b) => (b.created_at || "").localeCompare(a.created_at || ""));
+  });
 }
 
 function publicLicenseState(license, registration = null) {
@@ -589,6 +591,7 @@ export async function handleLicensingAdminRoutes(req, res, path, ctx) {
     }
     await redis.del(`registration:${regMatch[1]}`);
     await redis.srem("registrations:index", regMatch[1]);
+    invalidate("registrations");
     ok(res, { ok: true });
     return true;
   }
@@ -691,6 +694,7 @@ export async function handleLicensingAdminRoutes(req, res, path, ctx) {
     if (license.key_hash) await redis.del(`license:hash:${license.key_hash}`);
     await redis.del(`license:${license.id}`);
     await redis.srem("licenses:index", license.id);
+    invalidate("licenses");
     ok(res, { ok: true });
     return true;
   }

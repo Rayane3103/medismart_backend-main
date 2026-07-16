@@ -5,7 +5,7 @@ import crypto from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { redis } from "./redis.js";
+import { redis, mgetExisting, cached, invalidate, withRequestCache } from "./redis.js";
 import { ADMIN_CSS, ADMIN_HTML, ADMIN_JS } from "./admin-ui.js";
 import {
   adminLogin,
@@ -32,6 +32,17 @@ import {
 
 const CLOUD_NOT_PROVISIONED_MSG =
   "L'accès IA n'est pas encore activé. Contactez votre administrateur MediSmart.";
+
+// The admin CSS/JS are cached hard and busted by content hash, so a deploy is
+// picked up on the next normal load instead of leaving admins on stale code
+// until the cache expires (or they know to hard-refresh).
+const ASSET_VERSION = crypto.createHash("sha1").update(ADMIN_CSS + ADMIN_JS).digest("hex").slice(0, 10);
+const ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable";
+let _adminHtml = null;
+function adminHtml() {
+  if (!_adminHtml) _adminHtml = ADMIN_HTML.replace(/__ASSET_VERSION__/g, ASSET_VERSION);
+  return _adminHtml;
+}
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 let _logoBytes = null;
@@ -204,6 +215,7 @@ async function getApiKey(keyId) {
 async function saveApiKey(apiKey) {
   apiKey.updated_at = nowIso();
   await redis.set(`api_key:${apiKey.id}`, apiKey);
+  invalidate("api_keys");
 }
 
 async function listApiKeyIds() {
@@ -217,20 +229,31 @@ async function indexApiKey(keyId) {
 async function removeApiKey(keyId) {
   await redis.del(`api_key:${keyId}`);
   await redis.srem("api_keys:index", keyId);
+  invalidate("api_keys");
 }
 
 async function listApiKeys() {
-  const ids = await listApiKeyIds();
-  const rows = [];
-  for (const id of ids) {
-    const key = await getApiKey(id);
-    if (key) {
-      const fresh = ensureApiKeyDefaults({ ...key });
-      await saveApiKey(fresh);
-      rows.push(fresh);
-    }
-  }
-  return rows.sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+  return cached("api_keys", async () => {
+    const ids = await listApiKeyIds();
+    const stored = await mgetExisting(ids.map((id) => `api_key:${id}`));
+    const rows = stored.map((key) => migrate(key, ensureApiKeyDefaults));
+    await persistMigrated(rows, saveApiKey);
+    return rows.map((r) => r.row).sort((a, b) => (a.name || "").localeCompare(b.name || ""));
+  });
+}
+
+// ensure*Defaults doubles as a lazy migration for older records. Run it on a
+// copy and report whether it actually changed anything, so a plain read does
+// not write every row back to Redis.
+function migrate(stored, ensureDefaults) {
+  const before = JSON.stringify(stored);
+  const row = ensureDefaults({ ...stored });
+  return { row, dirty: JSON.stringify(row) !== before };
+}
+
+async function persistMigrated(results, save) {
+  const dirty = results.filter((r) => r.dirty).map((r) => r.row);
+  if (dirty.length) await Promise.all(dirty.map((row) => save(row)));
 }
 
 function ensureApiKeyDefaults(apiKey) {
@@ -277,6 +300,7 @@ async function getDoctor(doctorId) {
 async function saveDoctor(doctor) {
   doctor.updated_at = nowIso();
   await redis.set(`doctor:${doctor.id}`, doctor);
+  invalidate("doctors");
 }
 
 async function listDoctorIds() {
@@ -288,17 +312,13 @@ async function indexDoctor(doctorId) {
 }
 
 async function listDoctors() {
-  const ids = await listDoctorIds();
-  const rows = [];
-  for (const id of ids) {
-    const doctor = await getDoctor(id);
-    if (doctor) {
-      const fresh = ensureDoctorDefaults({ ...doctor });
-      await saveDoctor(fresh);
-      rows.push(fresh);
-    }
-  }
-  return rows.sort((a, b) => (a.email || "").localeCompare(b.email || ""));
+  return cached("doctors", async () => {
+    const ids = await listDoctorIds();
+    const stored = await mgetExisting(ids.map((id) => `doctor:${id}`));
+    const rows = stored.map((doctor) => migrate(doctor, ensureDoctorDefaults));
+    await persistMigrated(rows, saveDoctor);
+    return rows.map((r) => r.row).sort((a, b) => (a.email || "").localeCompare(b.email || ""));
+  });
 }
 
 function displayNameFromEmail(email) {
@@ -726,7 +746,14 @@ async function callProviderChat({ provider, apiKey, model, messages, maxTokens }
 }
 
 // ---------- main router ----------
-export default async function handler(req, res) {
+// Each request gets its own cache so the collection helpers can be called
+// freely by the stats builders without re-reading Redis. It is discarded when
+// the request ends and is never shared between requests.
+export default function handler(req, res) {
+  return withRequestCache(() => handleRequest(req, res));
+}
+
+async function handleRequest(req, res) {
   try {
     if (req.method === "OPTIONS") return ok(res, {});
 
@@ -734,13 +761,14 @@ export default async function handler(req, res) {
 
     // ---- admin frontend ----
     if (req.method === "GET" && (path === "/" || path === "/admin")) {
-      return send(res, 200, "text/html; charset=utf-8", ADMIN_HTML);
+      // Never cache the HTML: it carries the asset version that busts the rest.
+      return send(res, 200, "text/html; charset=utf-8", adminHtml(), { "Cache-Control": "no-cache" });
     }
     if (req.method === "GET" && path === "/admin.css") {
-      return send(res, 200, "text/css; charset=utf-8", ADMIN_CSS, { "Cache-Control": "public, max-age=300" });
+      return send(res, 200, "text/css; charset=utf-8", ADMIN_CSS, { "Cache-Control": ASSET_CACHE_CONTROL });
     }
     if (req.method === "GET" && path === "/admin.js") {
-      return send(res, 200, "text/javascript; charset=utf-8", ADMIN_JS, { "Cache-Control": "public, max-age=300" });
+      return send(res, 200, "text/javascript; charset=utf-8", ADMIN_JS, { "Cache-Control": ASSET_CACHE_CONTROL });
     }
     if (req.method === "GET" && (path === "/admin/logo.png" || path === "/logo.png")) {
       const logo = adminLogoBytes();
@@ -1147,6 +1175,7 @@ export default async function handler(req, res) {
         await redis.del(`doctor:${id}`);
         await redis.srem("doctors:index", id);
         await redis.del(`logs:${id}`);
+        invalidate("doctors");
         return ok(res, { ok: true });
       }
 

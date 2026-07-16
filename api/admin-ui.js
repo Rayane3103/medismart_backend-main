@@ -7,8 +7,8 @@ export const ADMIN_HTML = `<!doctype html>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/admin.css">
-  <script defer src="/admin.js"></script>
+  <link rel="stylesheet" href="/admin.css?v=__ASSET_VERSION__">
+  <script defer src="/admin.js?v=__ASSET_VERSION__"></script>
 </head>
 <body>
   <!-- Sign-in -->
@@ -92,6 +92,7 @@ export const ADMIN_HTML = `<!doctype html>
           <button type="button" class="btn ghost" id="refreshButton">Actualiser</button>
           <button type="button" class="btn ghost danger-text" id="logoutButton">Déconnexion</button>
         </div>
+        <div class="topbar-progress hidden" id="topbarProgress" role="status" aria-label="Actualisation en cours"><i></i></div>
       </header>
 
       <main class="main-content">
@@ -504,12 +505,46 @@ button, input, select { font: inherit; }
 
 .btn { min-height: 40px; padding: 0 16px; border-radius: 10px; border: 1px solid transparent; font-weight: 700; font-size: 13px; cursor: pointer; white-space: nowrap; }
 .btn.primary { background: var(--primary); color: #fff; }
-.btn.primary:hover { background: var(--primary-hover); }
+.btn.primary:hover:not(:disabled) { background: var(--primary-hover); }
 .btn.ghost { background: #fff; border-color: var(--line); color: var(--text); }
-.btn.ghost:hover { background: #f8fafc; }
+.btn.ghost:hover:not(:disabled) { background: #f8fafc; }
 .btn.danger { background: var(--danger-bg); color: var(--danger); border-color: #fecaca; }
 .btn:disabled { opacity: .55; cursor: not-allowed; }
 .danger-text { color: var(--danger); }
+
+/* Busy buttons: the label stays in place but hidden so the button keeps its
+   exact width, and the spinner sits centred on top. Nothing reflows on click. */
+.btn.is-busy { position: relative; cursor: progress; }
+.btn.is-busy .btn-label { visibility: hidden; }
+.btn.is-busy .spinner { position: absolute; top: 50%; left: 50%; margin: -7px 0 0 -7px; }
+.spinner {
+  width: 14px; height: 14px; flex-shrink: 0; border-radius: 50%;
+  border: 2px solid currentColor; border-top-color: transparent;
+  animation: spin .6s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Indeterminate bar under the topbar during a background refresh. */
+.topbar-progress { position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; overflow: hidden; background: transparent; }
+.topbar-progress.hidden { display: none !important; }
+.topbar-progress i { position: absolute; inset: 0; display: block; width: 40%; background: var(--primary); border-radius: 2px; animation: slide 1.1s ease-in-out infinite; }
+@keyframes slide { 0% { left: -40%; } 100% { left: 100%; } }
+
+/* Skeletons: shown while a section's first fetch is still in flight, so the
+   panel never flashes a false "no results" state before the data lands. */
+.skeleton { background: linear-gradient(90deg, #eef2f7 25%, #f8fafc 37%, #eef2f7 63%); background-size: 400% 100%; animation: shimmer 1.3s ease-in-out infinite; border-radius: 6px; }
+@keyframes shimmer { 0% { background-position: 100% 50%; } 100% { background-position: 0 50%; } }
+.sk-line { height: 11px; margin: 6px 0; }
+.sk-cell-title { height: 13px; width: 62%; margin-bottom: 8px; }
+.sk-cell-sub { height: 10px; width: 40%; }
+.sk-pill { height: 22px; width: 74px; border-radius: 999px; }
+.sk-stat strong { display: block; height: 28px; width: 64px; }
+.stat-card.is-loading span { opacity: .55; }
+
+@media (prefers-reduced-motion: reduce) {
+  .spinner, .skeleton, .topbar-progress i { animation-duration: 0s; }
+  .skeleton { background: #eef2f7; }
+}
 
 .stat-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; margin-bottom: 18px; }
 .stat-grid--compact { margin-bottom: 22px; }
@@ -623,7 +658,11 @@ export const ADMIN_JS = `(function () {
     regQuery: "", regStatusFilter: "all",
     licenseQuery: "", licenseStatusFilter: "all",
     editingDoctorId: "", editingKeyId: "", editingLicenseId: "", editingReleaseId: "",
-    pendingCloudDoctorRegistrationId: "", pendingEntitlementRegId: ""
+    pendingCloudDoctorRegistrationId: "", pendingEntitlementRegId: "",
+    // True until a section's first fetch resolves. Drives skeletons, so a panel
+    // shows placeholders rather than a misleading "nothing here" while loading.
+    loading: { doctors: true, registrations: true, licenses: true, releases: true, telemetry: true },
+    refreshing: false
   };
 
   var el = {};
@@ -661,17 +700,79 @@ export const ADMIN_JS = `(function () {
   async function apiFetch(path, options) {
     options = options || {};
     var headers = Object.assign({ "Content-Type": "application/json" }, authHeader(), options.headers || {});
-    var res = await fetch(path, { method: options.method || "GET", headers: headers, body: options.body !== undefined ? JSON.stringify(options.body) : undefined });
+    var res;
+    try {
+      res = await fetch(path, {
+        method: options.method || "GET",
+        headers: headers,
+        body: options.body !== undefined ? JSON.stringify(options.body) : undefined
+      });
+    } catch (e) {
+      throw new Error("Serveur injoignable — vérifiez votre connexion.");
+    }
     var data = await res.json().catch(function () { return {}; });
-    if (!res.ok) throw new Error(data.error || res.statusText || "Erreur");
+    if (!res.ok) {
+      var error = new Error(data.error || res.statusText || "Erreur");
+      // An expired or revoked session can surface from any call, so handle it
+      // in one place instead of leaving the panel showing empty tables.
+      if (res.status === 401) { error.authExpired = true; handleAuthExpired(); }
+      throw error;
+    }
     return data;
   }
 
+  function handleAuthExpired() {
+    if (!state.session) return;
+    saveSession(null);
+    showLogin(true);
+    showToast("Session expirée — reconnectez-vous.", true);
+  }
+
+  // Shows a spinner inside the button while its action runs. The label stays in
+  // the DOM (just hidden) and the spinner is overlaid on top, so the button
+  // keeps its exact size — a spinner added beside the text would widen small
+  // row buttons and shift the whole row.
   function setBusy(btn, busy) {
     if (!btn) return;
-    btn.disabled = busy;
-    if (busy) { btn.dataset.label = btn.textContent; btn.textContent = "Patientez…"; }
-    else if (btn.dataset.label) { btn.textContent = btn.dataset.label; delete btn.dataset.label; }
+    if (busy) {
+      if (btn.__busy) return;
+      btn.__busy = true;
+      btn.__label = btn.innerHTML;
+      btn.disabled = true;
+      btn.setAttribute("aria-busy", "true");
+      btn.classList.add("is-busy");
+      btn.innerHTML = '<span class="btn-label">' + btn.__label + '</span><span class="spinner"></span>';
+    } else {
+      if (!btn.__busy) return;
+      btn.__busy = false;
+      btn.disabled = false;
+      btn.removeAttribute("aria-busy");
+      btn.classList.remove("is-busy");
+      if (btn.__label != null) btn.innerHTML = btn.__label;
+      delete btn.__label;
+    }
+  }
+
+  // Runs an async action with the button locked and spinning for its full
+  // duration. Every click that hits the network goes through this, so no
+  // button can look idle while work is in flight.
+  async function runBusy(btn, action) {
+    setBusy(btn, true);
+    try { return await action(); }
+    finally { setBusy(btn, false); }
+  }
+
+  // A network action triggered from a button: spinner while it runs, toast on
+  // success or failure. Returns true when it succeeded.
+  async function runAction(btn, action, successMsg) {
+    try {
+      await runBusy(btn, action);
+      if (successMsg) showToast(successMsg);
+      return true;
+    } catch (e) {
+      showToast((e && e.message) || "Erreur", true);
+      return false;
+    }
   }
 
   function showLogin(show) {
@@ -693,25 +794,124 @@ export const ADMIN_JS = `(function () {
     });
   }
 
+  // ---- loading placeholders -------------------------------------------------
+
+  function skeletonRows(columns, rows) {
+    var body = "";
+    for (var r = 0; r < rows; r++) {
+      var cells = "";
+      for (var c = 0; c < columns; c++) {
+        cells += '<td><div class="skeleton sk-cell-title"></div><div class="skeleton sk-cell-sub"></div></td>';
+      }
+      body += "<tr>" + cells + "</tr>";
+    }
+    return body;
+  }
+
+  function skeletonTable(headers, rows) {
+    var head = headers.map(function (h) { return "<th>" + escapeHtml(h) + "</th>"; }).join("");
+    return '<table class="data-table" aria-busy="true"><thead><tr>' + head + "</tr></thead><tbody>"
+      + skeletonRows(headers.length, rows || 4) + "</tbody></table>";
+  }
+
+  function skeletonStats(labels) {
+    return labels.map(function (label) {
+      return '<article class="stat-card is-loading"><span>' + escapeHtml(label)
+        + '</span><strong class="skeleton sk-stat"></strong></article>';
+    }).join("");
+  }
+
+  function setRefreshing(on) {
+    state.refreshing = on;
+    if (el.topbarProgress) el.topbarProgress.classList.toggle("hidden", !on);
+  }
+
+  // ---- data loading ---------------------------------------------------------
+  //
+  // The five endpoints are independent, so each one renders its own section the
+  // moment it lands instead of every panel waiting on the slowest response.
+
+  function applyDoctors(data) {
+    state.rows = data.rows || [];
+    state.apiKeys = data.api_keys || [];
+    state.providers = data.providers || {};
+    state.defaults = data.default_limits || state.defaults;
+    state.loading.doctors = false;
+    renderProviderOptions();
+    renderKeyFilter();
+    renderDoctorKeyOptions();
+    renderMetrics();
+    renderKeys();
+    renderDoctors();
+  }
+
+  function applyRegistrations(data) {
+    state.registrations = data.rows || [];
+    if (data.stats) state.stats = data.stats;
+    state.loading.registrations = false;
+    renderLicenseMetrics();
+    renderRegistrations();
+    // Telemetry rows resolve doctor names through the registration list.
+    if (!state.loading.telemetry) renderTelemetry();
+  }
+
+  function applyLicenses(data) {
+    state.licenses = data.rows || [];
+    if (data.stats) state.stats = data.stats;
+    state.loading.licenses = false;
+    renderLicenseMetrics();
+    renderLicenses();
+  }
+
+  function applyReleases(data) {
+    state.releases = data.rows || [];
+    if (data.stats) state.updateStats = data.stats;
+    state.loading.releases = false;
+    renderUpdateMetrics();
+    renderReleases();
+  }
+
+  function applyTelemetry(data) {
+    state.heartbeats = data.rows || [];
+    if (data.stats) state.updateStats = data.stats;
+    state.loading.telemetry = false;
+    renderUpdateMetrics();
+    renderTelemetry();
+  }
+
+  var SECTIONS = [
+    { key: "doctors", path: "/api/admin/doctors", apply: applyDoctors },
+    { key: "registrations", path: "/api/admin/registrations", apply: applyRegistrations },
+    { key: "licenses", path: "/api/admin/licenses", apply: applyLicenses },
+    { key: "releases", path: "/api/admin/releases", apply: applyReleases },
+    { key: "telemetry", path: "/api/admin/update-telemetry", apply: applyTelemetry }
+  ];
+
+  // Resolves once every section has settled. Rejects only if all of them failed,
+  // so one broken endpoint cannot blank the whole panel.
   async function loadData() {
-    var results = await Promise.all([
-      apiFetch("/api/admin/doctors"),
-      apiFetch("/api/admin/registrations"),
-      apiFetch("/api/admin/licenses"),
-      apiFetch("/api/admin/releases").catch(function () { return { rows: [], stats: {} }; }),
-      apiFetch("/api/admin/update-telemetry").catch(function () { return { rows: [], stats: {} }; })
-    ]);
-    state.rows = results[0].rows || [];
-    state.apiKeys = results[0].api_keys || [];
-    state.providers = results[0].providers || {};
-    state.defaults = results[0].default_limits || state.defaults;
-    state.registrations = results[1].rows || [];
-    state.licenses = results[2].rows || [];
-    state.stats = results[2].stats || results[1].stats || {};
-    state.releases = results[3].rows || [];
-    state.updateStats = results[3].stats || results[4].stats || {};
-    state.heartbeats = results[4].rows || [];
-    renderAll();
+    setRefreshing(true);
+    var failures = [];
+    try {
+      await Promise.all(SECTIONS.map(function (section) {
+        return apiFetch(section.path).then(function (data) {
+          section.apply(data);
+        }).catch(function (e) {
+          failures.push({ key: section.key, error: e });
+          // Clear the skeleton: the section is no longer loading, it failed.
+          state.loading[section.key] = false;
+          renderAll();
+        });
+      }));
+    } finally {
+      setRefreshing(false);
+    }
+    if (failures.length === SECTIONS.length) throw failures[0].error;
+    // An expired session already redirected to login and said so.
+    var reportable = failures.filter(function (f) { return !f.error.authExpired; });
+    if (reportable.length) {
+      showToast("Certaines données n'ont pas pu être chargées (" + reportable[0].error.message + ")", true);
+    }
   }
 
   function renderAll() {
@@ -729,11 +929,27 @@ export const ADMIN_JS = `(function () {
     renderTelemetry();
   }
 
+  // Refresh after a mutation. The action already reported success, so failures
+  // here only mean the on-screen list may be a moment behind.
+  function refreshData() {
+    return loadData().catch(function (e) {
+      if (!e.authExpired) showToast("Actualisation impossible : " + e.message, true);
+    });
+  }
+
   function statCard(label, value, accent) {
     return '<article class="stat-card ' + (accent || "") + '"><span>' + escapeHtml(label) + '</span><strong>' + escapeHtml(value) + '</strong></article>';
   }
 
+  var LICENSE_METRIC_LABELS = ["Inscriptions", "En attente d'activation", "Médecins activés", "Licences générées"];
+  var UPDATE_METRIC_LABELS = ["Sur dernière stable", "Releases publiées", "Entitlements actifs", "Échecs / alertes update"];
+  var AI_METRIC_LABELS = ["Clés API", "Comptes IA", "Comptes actifs", "Requêtes aujourd'hui", "Requêtes ce mois"];
+
   function renderLicenseMetrics() {
+    if (state.loading.registrations && state.loading.licenses) {
+      el.licenseMetrics.innerHTML = skeletonStats(LICENSE_METRIC_LABELS);
+      return;
+    }
     var s = state.stats || {};
     el.licenseMetrics.innerHTML =
       statCard("Inscriptions", s.registrations_total || 0, "accent-blue") +
@@ -744,6 +960,10 @@ export const ADMIN_JS = `(function () {
 
   function renderUpdateMetrics() {
     if (!el.updateMetrics) return;
+    if (state.loading.releases && state.loading.telemetry) {
+      el.updateMetrics.innerHTML = skeletonStats(UPDATE_METRIC_LABELS);
+      return;
+    }
     var s = state.updateStats || {};
     var failures = (state.heartbeats || []).filter(function (h) {
       return String(h.update_status || "").indexOf("fail") !== -1 || String(h.last_error || "").length > 0;
@@ -756,6 +976,7 @@ export const ADMIN_JS = `(function () {
   }
 
   function renderMetrics() {
+    if (state.loading.doctors) { el.metrics.innerHTML = skeletonStats(AI_METRIC_LABELS); return; }
     var totalDoctors = state.rows.length;
     var activeDoctors = state.rows.filter(function (r) { return r.active; }).length;
     var totalKeys = state.apiKeys.length;
@@ -803,6 +1024,11 @@ export const ADMIN_JS = `(function () {
   }
 
   function renderKeys() {
+    if (state.loading.doctors) {
+      el.keyCount.textContent = "…";
+      el.keyRows.innerHTML = skeletonTable(["Clé", "Statut", "Modèle", "Assignée", ""], 3);
+      return;
+    }
     el.keyCount.textContent = state.apiKeys.length;
     if (!state.apiKeys.length) { el.keyRows.innerHTML = '<div class="empty">Aucune clé API.</div>'; return; }
     var rows = state.apiKeys.map(function (k) {
@@ -826,6 +1052,11 @@ export const ADMIN_JS = `(function () {
   }
 
   function renderDoctors() {
+    if (state.loading.doctors) {
+      el.doctorCount.textContent = "…";
+      el.doctorRows.innerHTML = skeletonTable(["Compte", "Connexion", "Clé IA", "Requêtes", ""], 4);
+      return;
+    }
     var rows = filteredDoctors();
     el.doctorCount.textContent = rows.length;
     if (!rows.length) { el.doctorRows.innerHTML = '<div class="empty">Aucun compte médecin IA.</div>'; return; }
@@ -855,6 +1086,11 @@ export const ADMIN_JS = `(function () {
   }
 
   function renderRegistrations() {
+    if (state.loading.registrations) {
+      el.regCount.textContent = "…";
+      el.regRows.innerHTML = skeletonTable(["Médecin", "Contact", "Licence", "Updates", ""], 5);
+      return;
+    }
     var rows = filteredRegistrations();
     el.regCount.textContent = rows.length;
     if (!rows.length) { el.regRows.innerHTML = '<div class="empty">Aucune inscription synchronisée pour le moment.</div>'; return; }
@@ -893,6 +1129,11 @@ export const ADMIN_JS = `(function () {
   }
 
   function renderLicenses() {
+    if (state.loading.licenses) {
+      el.licenseCount.textContent = "…";
+      el.licenseRows.innerHTML = skeletonTable(["Clé", "Type", "Médecin", "Dates", ""], 5);
+      return;
+    }
     var rows = filteredLicenses();
     el.licenseCount.textContent = rows.length;
     if (!rows.length) { el.licenseRows.innerHTML = '<div class="empty">Aucune licence générée.</div>'; return; }
@@ -929,6 +1170,11 @@ export const ADMIN_JS = `(function () {
 
   function renderReleases() {
     if (!el.releaseRows) return;
+    if (state.loading.releases) {
+      el.releaseCount.textContent = "…";
+      el.releaseRows.innerHTML = skeletonTable(["Version", "Type", "Déploiement", "Date", ""], 3);
+      return;
+    }
     var rows = state.releases || [];
     el.releaseCount.textContent = rows.length;
     if (!rows.length) { el.releaseRows.innerHTML = '<div class="empty">Aucune release. Cliquez « Importer depuis GitHub » après un tag vX.Y.Z (build Actions terminé), ou attendez l’enregistrement automatique CI.</div>'; return; }
@@ -952,6 +1198,11 @@ export const ADMIN_JS = `(function () {
 
   function renderTelemetry() {
     if (!el.telemetryRows) return;
+    if (state.loading.telemetry) {
+      el.telemetryCount.textContent = "…";
+      el.telemetryRows.innerHTML = skeletonTable(["Médecin", "Version", "Canal", "Statut", "Vu"], 4);
+      return;
+    }
     var rows = state.heartbeats || [];
     el.telemetryCount.textContent = rows.length;
     if (!rows.length) { el.telemetryRows.innerHTML = '<div class="empty">Aucune télémétrie reçue pour le moment.</div>'; return; }
@@ -968,22 +1219,15 @@ export const ADMIN_JS = `(function () {
   }
 
   async function importGithubRelease() {
-    if (!el.importGithubReleaseButton) {
-      alert("Bouton Import introuvable — rechargez la page (Ctrl+F5).");
-      return;
-    }
     setBusy(el.importGithubReleaseButton, true);
     showToast("Import GitHub en cours…");
     try {
       var result = await apiFetch("/api/admin/releases/import-github", { method: "POST", body: {} });
-      await loadData();
-      var release = result.release;
-      if (release) openReleaseDialog(release);
+      if (result.release) openReleaseDialog(result.release);
       showToast(result.created ? "Release importée depuis GitHub" : "Release déjà connue — configurez-la");
+      refreshData();
     } catch (e) {
-      var msg = (e && e.message) ? e.message : "Import impossible";
-      showToast(msg, true);
-      alert(msg);
+      showToast((e && e.message) ? e.message : "Import impossible", true);
     } finally {
       setBusy(el.importGithubReleaseButton, false);
     }
@@ -1045,27 +1289,22 @@ export const ADMIN_JS = `(function () {
       }
       el.releaseDialog.close();
       state.editingReleaseId = "";
-      await loadData();
       showToast("Mise à jour enregistrée");
+      refreshData();
     } catch (err) { showToast(err.message, true); }
     finally { setBusy(btn, false); }
   }
 
-  async function publishRelease(id) {
-    try {
-      await apiFetch("/api/admin/releases/" + encodeURIComponent(id) + "/publish", { method: "POST" });
-      await loadData();
-      showToast("Release publiée");
-    } catch (e) { showToast(e.message, true); }
+  function publishRelease(id, btn) {
+    rowAction(btn, "", function () {
+      return apiFetch("/api/admin/releases/" + encodeURIComponent(id) + "/publish", { method: "POST" });
+    }, "Release publiée");
   }
 
-  async function deleteRelease(id) {
-    if (!confirm("Supprimer cette release ?")) return;
-    try {
-      await apiFetch("/api/admin/releases/" + encodeURIComponent(id), { method: "DELETE" });
-      await loadData();
-      showToast("Release supprimée");
-    } catch (e) { showToast(e.message, true); }
+  function deleteRelease(id, btn) {
+    rowAction(btn, "Supprimer cette release ?", function () {
+      return apiFetch("/api/admin/releases/" + encodeURIComponent(id), { method: "DELETE" });
+    }, "Release supprimée");
   }
 
   function openEntitlementDialog(regId) {
@@ -1097,20 +1336,17 @@ export const ADMIN_JS = `(function () {
       });
       el.entitlementDialog.close();
       state.pendingEntitlementRegId = "";
-      await loadData();
       showToast("Mise à jour payante activée");
+      refreshData();
     } catch (err) { showToast(err.message, true); }
     finally { setBusy(btn, false); }
   }
 
-  async function revokeEntitlement(id, sku) {
+  function revokeEntitlement(id, sku, btn) {
     sku = sku || "premium_2026";
-    if (!confirm("Révoquer l'accès à la mise à jour payante (" + sku + ") ?")) return;
-    try {
-      await apiFetch("/api/admin/registrations/" + encodeURIComponent(id) + "/entitlements/" + encodeURIComponent(sku) + "/revoke", { method: "POST" });
-      await loadData();
-      showToast("Entitlement révoqué");
-    } catch (e) { showToast(e.message, true); }
+    rowAction(btn, "Révoquer l'accès à la mise à jour payante (" + sku + ") ?", function () {
+      return apiFetch("/api/admin/registrations/" + encodeURIComponent(id) + "/entitlements/" + encodeURIComponent(sku) + "/revoke", { method: "POST" });
+    }, "Entitlement révoqué");
   }
 
   function openCloudDoctorDialog(regId) {
@@ -1147,8 +1383,8 @@ export const ADMIN_JS = `(function () {
       await apiFetch("/api/admin/registrations/" + encodeURIComponent(regId) + "/create-cloud-doctor", { method: "POST", body: body });
       el.cloudDoctorDialog.close();
       state.pendingCloudDoctorRegistrationId = "";
-      await loadData();
       showToast(useDefaults ? "Compte IA créé (valeurs par défaut)" : "Compte IA créé — connexion automatique activée");
+      refreshData();
     } catch (e) { showToast(e.message, true); }
     finally {
       setBusy(el.cloudDoctorSubmit, false);
@@ -1225,12 +1461,12 @@ export const ADMIN_JS = `(function () {
       var result = await apiFetch("/api/admin/licenses/" + encodeURIComponent(id), { method: "PATCH", body: body });
       el.licenseEditDialog.close();
       state.editingLicenseId = "";
-      await loadData();
       var lic = result.license || {};
       var msg = lic.license_type === "lifetime"
         ? "Licence mise à jour — à vie"
         : "Licence mise à jour — essai " + (lic.trial_days || "?") + " jours";
       showToast(msg);
+      refreshData();
     } catch (err) { showToast(err.message, true); }
     finally { setBusy(btn, false); }
   }
@@ -1250,10 +1486,11 @@ export const ADMIN_JS = `(function () {
       if (body.license_type === "trial") body.trial_days = parseInt(el.licenseTrialDays.value, 10) || 0;
       var result = await apiFetch("/api/admin/licenses", { method: "POST", body: body });
       el.licenseDialog.close();
-      await loadData();
+      // Show the key as soon as the server has it; the table catches up after.
       el.generatedSerialKey.value = result.serial_key || "";
       el.generatedSerialMeta.textContent = result.license ? (result.license.license_type === "trial" ? "Essai " + result.license.trial_days + " jours" : "Licence à vie") : "";
       el.serialDialog.showModal();
+      refreshData();
     } catch (err) { showToast(err.message, true); }
     finally { setBusy(btn, false); }
   }
@@ -1298,7 +1535,7 @@ export const ADMIN_JS = `(function () {
       if (state.editingKeyId && el.clearKeySecret.checked) body.clear_api_key = true;
       if (state.editingKeyId) await apiFetch("/api/admin/api-keys/" + encodeURIComponent(state.editingKeyId), { method: "PATCH", body: body });
       else await apiFetch("/api/admin/api-keys", { method: "POST", body: body });
-      el.keyDialog.close(); await loadData(); showToast("Clé API enregistrée");
+      el.keyDialog.close(); showToast("Clé API enregistrée"); refreshData();
     } catch (err) { showToast(err.message, true); } finally { setBusy(btn, false); }
   }
 
@@ -1315,10 +1552,14 @@ export const ADMIN_JS = `(function () {
         if (el.resetDaily.checked) body.reset_daily = true;
       }
       var result;
+      var isNew = !state.editingDoctorId;
       if (state.editingDoctorId) result = await apiFetch("/api/admin/doctors/" + encodeURIComponent(state.editingDoctorId), { method: "PATCH", body: body });
       else result = await apiFetch("/api/admin/doctors", { method: "POST", body: body });
-      el.doctorDialog.close(); await loadData(); showToast("Compte enregistré");
-      if (!state.editingDoctorId && result.doctor) showToast("Le médecin se connectera automatiquement depuis l'application desktop.");
+      el.doctorDialog.close();
+      showToast(isNew && result.doctor
+        ? "Compte enregistré — le médecin se connectera automatiquement depuis l'application desktop."
+        : "Compte enregistré");
+      refreshData();
     } catch (err) { showToast(err.message, true); } finally { setBusy(btn, false); }
   }
 
@@ -1327,11 +1568,42 @@ export const ADMIN_JS = `(function () {
     el.credentialsDialog.showModal();
   }
 
-  async function deleteKey(id) { if (!confirm("Supprimer cette clé API ?")) return; try { await apiFetch("/api/admin/api-keys/" + encodeURIComponent(id), { method: "DELETE" }); await loadData(); showToast("Clé supprimée"); } catch (e) { showToast(e.message, true); } }
-  async function deleteDoctor(id) { if (!confirm("Supprimer ce compte ?")) return; try { await apiFetch("/api/admin/doctors/" + encodeURIComponent(id), { method: "DELETE" }); await loadData(); showToast("Compte supprimé"); } catch (e) { showToast(e.message, true); } }
-  async function deleteRegistration(id) { if (!confirm("Supprimer cette inscription ?")) return; try { await apiFetch("/api/admin/registrations/" + encodeURIComponent(id), { method: "DELETE" }); await loadData(); showToast("Inscription supprimée"); } catch (e) { showToast(e.message, true); } }
-  async function revokeLicense(id) { if (!confirm("Révoquer cette licence ?")) return; try { await apiFetch("/api/admin/licenses/" + encodeURIComponent(id) + "/revoke", { method: "POST" }); await loadData(); showToast("Licence révoquée"); } catch (e) { showToast(e.message, true); } }
-  async function deleteLicense(id) { if (!confirm("Supprimer cette licence non utilisée ?")) return; try { await apiFetch("/api/admin/licenses/" + encodeURIComponent(id), { method: "DELETE" }); await loadData(); showToast("Licence supprimée"); } catch (e) { showToast(e.message, true); } }
+  // Row actions. Each keeps its button spinning until the request comes back,
+  // then refreshes the table in the background.
+  async function rowAction(btn, confirmMsg, request, successMsg) {
+    if (confirmMsg && !confirm(confirmMsg)) return;
+    if (await runAction(btn, request, successMsg)) refreshData();
+  }
+
+  function deleteKey(id, btn) {
+    rowAction(btn, "Supprimer cette clé API ?", function () {
+      return apiFetch("/api/admin/api-keys/" + encodeURIComponent(id), { method: "DELETE" });
+    }, "Clé supprimée");
+  }
+
+  function deleteDoctor(id, btn) {
+    rowAction(btn, "Supprimer ce compte ?", function () {
+      return apiFetch("/api/admin/doctors/" + encodeURIComponent(id), { method: "DELETE" });
+    }, "Compte supprimé");
+  }
+
+  function deleteRegistration(id, btn) {
+    rowAction(btn, "Supprimer cette inscription ?", function () {
+      return apiFetch("/api/admin/registrations/" + encodeURIComponent(id), { method: "DELETE" });
+    }, "Inscription supprimée");
+  }
+
+  function revokeLicense(id, btn) {
+    rowAction(btn, "Révoquer cette licence ?", function () {
+      return apiFetch("/api/admin/licenses/" + encodeURIComponent(id) + "/revoke", { method: "POST" });
+    }, "Licence révoquée");
+  }
+
+  function deleteLicense(id, btn) {
+    rowAction(btn, "Supprimer cette licence non utilisée ?", function () {
+      return apiFetch("/api/admin/licenses/" + encodeURIComponent(id), { method: "DELETE" });
+    }, "Licence supprimée");
+  }
 
   async function openLogs(id) {
     var row = findDoctor(id);
@@ -1357,11 +1629,12 @@ export const ADMIN_JS = `(function () {
     });
   }
 
+  // Passes the clicked button to the handler so it can show its own spinner.
   function handleTableClick(e, map) {
     var btn = e.target.closest("button[data-action]");
-    if (!btn) return;
+    if (!btn || btn.__busy) return;
     var fn = map[btn.dataset.action];
-    if (fn) fn(btn.dataset.id);
+    if (fn) fn(btn.dataset.id, btn);
   }
 
   async function doLogin(e) {
@@ -1374,13 +1647,20 @@ export const ADMIN_JS = `(function () {
         body: JSON.stringify({ username: el.loginUsername.value.trim(), password: el.loginPassword.value })
       }).then(function (r) { return r.json().then(function (d) { if (!r.ok) throw new Error(d.error || "Connexion impossible"); return d; }); });
       saveSession({ token: result.token, username: result.user.username, display_name: result.user.display_name });
-      el.userDisplayName.textContent = result.user.display_name || result.user.username;
-      el.userAvatar.textContent = (result.user.display_name || result.user.username || "A").charAt(0).toUpperCase();
+      setCurrentUser(result.user);
+      // Reveal the shell with skeletons immediately rather than holding the
+      // login button until every table has loaded.
       showLogin(false);
-      await loadData();
       showToast("Bienvenue, " + (result.user.display_name || result.user.username));
+      refreshData();
     } catch (err) { showToast(err.message, true); }
     finally { setBusy(el.loginSubmit, false); }
+  }
+
+  function setCurrentUser(user) {
+    var label = user.display_name || user.username || "";
+    el.userDisplayName.textContent = label;
+    el.userAvatar.textContent = (label || "A").charAt(0).toUpperCase();
   }
 
   async function doLogout() {
@@ -1394,26 +1674,33 @@ export const ADMIN_JS = `(function () {
     var session = loadSession();
     if (!session || !session.token) { showLogin(true); return; }
     saveSession(session);
+
+    // Show the shell with skeletons and the remembered identity straight away,
+    // and verify the session while the data loads rather than before it. A bad
+    // token is caught by the 401 handler, which drops back to login.
+    setCurrentUser(session);
+    showLogin(false);
+    renderAll();
+
+    var data = refreshData();
     try {
       var me = await apiFetch("/api/admin/me");
-      el.userDisplayName.textContent = me.user.display_name || me.user.username;
-      el.userAvatar.textContent = (me.user.display_name || me.user.username || "A").charAt(0).toUpperCase();
-      showLogin(false);
-      await loadData();
+      setCurrentUser(me.user);
     } catch (e) {
-      saveSession(null);
-      showLogin(true);
+      if (!e.authExpired) { saveSession(null); showLogin(true); }
     }
+    await data;
   }
 
   function bindEvents() {
     el.loginForm.addEventListener("submit", doLogin);
-    el.logoutButton.addEventListener("click", doLogout);
-    el.refreshButton.addEventListener("click", function () { loadData().then(function () { showToast("Actualisé"); }).catch(function (e) { showToast(e.message, true); }); });
+    el.logoutButton.addEventListener("click", function () { runBusy(el.logoutButton, doLogout); });
+    el.refreshButton.addEventListener("click", function () {
+      runAction(el.refreshButton, loadData, "Actualisé");
+    });
     el.sidebarNav.addEventListener("click", function (e) { var n = e.target.closest(".nav-item"); if (n) setView(n.dataset.view); });
     el.newLicenseButtonAlt.addEventListener("click", function () { openLicenseDialog(""); });
-    if (el.importGithubReleaseButton) el.importGithubReleaseButton.addEventListener("click", function () { importGithubRelease(); });
-    else console.warn("importGithubReleaseButton missing");
+    el.importGithubReleaseButton.addEventListener("click", importGithubRelease);
     el.newReleaseButton.addEventListener("click", function () {
       if (!(state.releases || []).length) { showToast("Importez d'abord depuis GitHub", true); return; }
       openReleaseDialog(state.releases[0]);
@@ -1439,14 +1726,14 @@ export const ADMIN_JS = `(function () {
     el.keyFilter.addEventListener("change", function () { state.keyFilter = el.keyFilter.value; renderDoctors(); });
     el.regRows.addEventListener("click", function (e) {
       var btn = e.target.closest("button[data-action]");
-      if (!btn) return;
+      if (!btn || btn.__busy) return;
       var action = btn.dataset.action;
       var id = btn.dataset.id;
       if (action === "reg-generate") openLicenseDialog(id);
       else if (action === "reg-cloud-doctor") createCloudDoctor(id);
-      else if (action === "reg-delete") deleteRegistration(id);
+      else if (action === "reg-delete") deleteRegistration(id, btn);
       else if (action === "reg-entitle") openEntitlementDialog(id);
-      else if (action === "reg-revoke-entitle") revokeEntitlement(id, btn.dataset.sku);
+      else if (action === "reg-revoke-entitle") revokeEntitlement(id, btn.dataset.sku, btn);
     });
     el.releaseRows.addEventListener("click", function (e) {
       handleTableClick(e, {
@@ -1468,10 +1755,10 @@ export const ADMIN_JS = `(function () {
 
   function init() {
     ["loginScreen","loginForm","loginUsername","loginPassword","loginSubmit","appShell","sidebarNav",
-     "userDisplayName","userAvatar","pageKicker","pageTitle","refreshButton","logoutButton","mainContent",
+     "userDisplayName","userAvatar","pageKicker","pageTitle","refreshButton","logoutButton","mainContent","topbarProgress",
      "licenseMetrics","updateMetrics","metrics","regSearchInput","regStatusFilter","regCount","regRows",
      "licenseSearchInput","licenseStatusFilter","licenseCount","licenseRows","newLicenseButtonAlt",
-     "newReleaseButton","releaseCount","releaseRows","telemetryCount","telemetryRows",
+     "newReleaseButton","importGithubReleaseButton","releaseCount","releaseRows","telemetryCount","telemetryRows",
      "newKeyButton","newDoctorButton","keyCount","keyRows","searchInput","keyFilter","doctorCount","doctorRows",
      "licenseDialog","licenseForm","licenseRegistration","licenseType","trialDaysWrap","licenseTrialDays","licenseNote",
      "licenseEditDialog","licenseEditForm","licenseEditId","licenseEditSerial","licenseEditStatus","licenseEditExpires","licenseEditRegistration","licenseEditType","licenseEditTrialWrap","licenseEditTrialDays","licenseEditNote",
