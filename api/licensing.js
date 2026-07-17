@@ -12,6 +12,7 @@
 
 import crypto from "node:crypto";
 import { redis, mgetExisting, cached, invalidate } from "./redis.js";
+import { sendEmail, emailConfigured, licenseEmailTemplate } from "./email.js";
 
 export const LICENSE_TYPES = ["trial", "lifetime"];
 export const LICENSE_STATUSES = ["generated", "used", "revoked"];
@@ -260,6 +261,7 @@ export function adminLicenseState(license, registration = null) {
   return {
     ...publicLicenseState(license, registration),
     serial_key: license.serial_key || "",
+    registration_email: registration?.email || "",
   };
 }
 
@@ -680,6 +682,47 @@ export async function handleLicensingAdminRoutes(req, res, path, ctx) {
     license.revoked_at = nowIso();
     await saveLicense(license);
     ok(res, { ok: true, license: adminLicenseState(license) });
+    return true;
+  }
+
+  // Email the serial key to a doctor. Body may override the recipient email;
+  // otherwise the linked registration's email is used.
+  const sendEmailMatch = path.match(/^\/api\/admin\/licenses\/([a-f0-9-]+)\/send-email$/);
+  if (sendEmailMatch && req.method === "POST") {
+    const license = await getLicense(sendEmailMatch[1]);
+    if (!license) { err(res, 404, "Licence introuvable"); return true; }
+    const serialKey = license.serial_key;
+    if (!serialKey) {
+      err(res, 409, "La clé complète n'est pas archivée pour cette licence — impossible de l'envoyer.");
+      return true;
+    }
+    const registration = license.registration_id ? await getRegistration(license.registration_id) : null;
+    const body = await readJson(req);
+    const to = cleanStr(body.email, 200) || registration?.email || "";
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(to)) {
+      err(res, 400, "Adresse email du médecin manquante ou invalide.");
+      return true;
+    }
+    if (!emailConfigured()) {
+      err(res, 503, "Service email non configuré. Renseignez BREVO_API_KEY et EMAIL_FROM.");
+      return true;
+    }
+    try {
+      await sendEmail({
+        to,
+        subject: "Votre clé d'activation MediSmart",
+        html: licenseEmailTemplate({
+          serialKey,
+          doctorName: registration?.full_name || "",
+          licenseType: license.license_type,
+          trialDays: license.trial_days,
+        }),
+      });
+    } catch (e) {
+      err(res, 502, e.message || "Envoi de l'email impossible.");
+      return true;
+    }
+    ok(res, { ok: true, sent_to: to });
     return true;
   }
 

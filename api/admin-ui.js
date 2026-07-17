@@ -58,6 +58,11 @@ export const ADMIN_HTML = `<!doctype html>
           <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
           <span>Inscriptions</span>
         </button>
+        <button type="button" class="nav-item" data-view="demandes">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
+          <span>Demandes d'installation</span>
+          <span class="nav-badge hidden" id="demandeBadge">0</span>
+        </button>
         <button type="button" class="nav-item" data-view="licenses">
           <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0 3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
           <span>Licences</span>
@@ -128,6 +133,31 @@ export const ADMIN_HTML = `<!doctype html>
               <span id="regCount" class="panel-count">0</span>
             </div>
             <div class="table-wrap" id="regRows"></div>
+          </section>
+        </div>
+
+        <div class="view hidden" id="view-demandes">
+          <div class="toolbar">
+            <label class="search-field">
+              <span>Rechercher</span>
+              <input id="demandeSearchInput" type="search" placeholder="Nom, spécialité, téléphone, email, ville…">
+            </label>
+            <label>
+              <span>Statut</span>
+              <select id="demandeStatusFilter">
+                <option value="all">Tous</option>
+                <option value="new">Nouvelles</option>
+                <option value="contacted">Contactées</option>
+                <option value="archived">Archivées</option>
+              </select>
+            </label>
+          </div>
+          <section class="panel">
+            <div class="panel-head">
+              <h2>Demandes d'installation</h2>
+              <span id="demandeCount" class="panel-count">0</span>
+            </div>
+            <div class="table-wrap" id="demandeRows"></div>
           </section>
         </div>
 
@@ -237,8 +267,26 @@ export const ADMIN_HTML = `<!doctype html>
         <button class="btn ghost" type="button" data-copy="generatedSerialKey">Copier</button>
       </div>
       <p class="subtle" id="generatedSerialMeta"></p>
-      <footer class="modal-foot"><button class="btn primary" type="button" data-close-dialog="serialDialog">Terminé</button></footer>
+      <footer class="modal-foot">
+        <button class="btn ghost" type="button" id="serialSendEmailButton">Envoyer par email</button>
+        <button class="btn primary" type="button" data-close-dialog="serialDialog">Terminé</button>
+      </footer>
     </div>
+  </dialog>
+
+  <dialog class="modal" id="licenseEmailDialog">
+    <form class="modal-card" id="licenseEmailForm">
+      <header class="modal-head">
+        <div><p class="kicker">Licence</p><h2>Envoyer la clé par email</h2></div>
+        <button class="icon-close" type="button" data-close-dialog="licenseEmailDialog" aria-label="Fermer">×</button>
+      </header>
+      <p class="subtle" id="licenseEmailKeyMeta" style="margin-bottom:14px"></p>
+      <div class="form-grid">
+        <label class="full"><span>Email du médecin</span><input id="licenseEmailAddress" type="email" required placeholder="docteur@exemple.com"></label>
+      </div>
+      <p class="subtle" style="margin-top:10px">Un email HTML avec la clé et une mise en forme soignée sera envoyé au médecin.</p>
+      <footer class="modal-foot"><button class="btn ghost" type="button" data-close-dialog="licenseEmailDialog">Annuler</button><button class="btn primary" type="submit">Envoyer</button></footer>
+    </form>
   </dialog>
 
   <dialog class="modal" id="licenseEditDialog">
@@ -490,6 +538,8 @@ button, input, select { font: inherit; }
 .nav-item.active { background: #fff; color: #1e40af; font-weight: 600; box-shadow: 0 8px 20px rgba(0,0,0,.18); }
 .nav-item.active .nav-icon { color: #2563eb; opacity: 1; }
 .nav-icon { width: 18px; height: 18px; flex-shrink: 0; opacity: .85; stroke: currentColor; }
+.nav-badge { margin-left: auto; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px; background: #ef4444; color: #fff; font-size: 11px; font-weight: 800; display: inline-flex; align-items: center; justify-content: center; box-shadow: 0 2px 6px rgba(239,68,68,.4); }
+.nav-item.active .nav-badge { background: #ef4444; }
 .sidebar-foot { border-top: 1px solid rgba(255,255,255,.08); padding: 12px 14px; flex-shrink: 0; }
 .sidebar-user { display: flex; align-items: center; gap: 10px; }
 .user-avatar { width: 30px; height: 30px; border-radius: 8px; background: rgba(255,255,255,.15); color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 12px; flex-shrink: 0; }
@@ -638,12 +688,14 @@ export const ADMIN_JS = `(function () {
   var PAGE_META = {
     dashboard: { kicker: "Vue d'ensemble", title: "Tableau de bord" },
     registrations: { kicker: "Licences", title: "Inscriptions médecins" },
+    demandes: { kicker: "Site web", title: "Demandes d'installation" },
     licenses: { kicker: "Licences", title: "Clés d'activation" },
     updates: { kicker: "Desktop", title: "Mises à jour" },
     ai: { kicker: "Intelligence artificielle", title: "IA & Médecins" }
   };
 
   var REG_STATUS = { pending_activation: "En attente", activated: "Activé" };
+  var DEMANDE_STATUS = { new: "Nouvelle", contacted: "Contactée", archived: "Archivée" };
   var LIC_STATUS = { generated: "Disponible", used: "Utilisée", revoked: "Révoquée" };
   var REL_SEVERITY = { mandatory: "Obligatoire", paid: "Payante", paid_mandatory: "Payante + obligatoire" };
   var REL_STATUS = { draft: "Brouillon", published: "Publiée", yanked: "Retirée" };
@@ -655,13 +707,16 @@ export const ADMIN_JS = `(function () {
     query: "", keyFilter: "all",
     registrations: [], licenses: [], stats: {},
     releases: [], updateStats: {}, heartbeats: [],
+    demandes: [], demandeUnseen: 0,
     regQuery: "", regStatusFilter: "all",
     licenseQuery: "", licenseStatusFilter: "all",
+    demandeQuery: "", demandeStatusFilter: "all",
     editingDoctorId: "", editingKeyId: "", editingLicenseId: "", editingReleaseId: "",
     pendingCloudDoctorRegistrationId: "", pendingEntitlementRegId: "",
+    pendingLicenseEmailId: "",
     // True until a section's first fetch resolves. Drives skeletons, so a panel
     // shows placeholders rather than a misleading "nothing here" while loading.
-    loading: { doctors: true, registrations: true, licenses: true, releases: true, telemetry: true },
+    loading: { doctors: true, registrations: true, licenses: true, releases: true, telemetry: true, demandes: true },
     refreshing: false
   };
 
@@ -788,10 +843,26 @@ export const ADMIN_JS = `(function () {
     document.querySelectorAll(".nav-item").forEach(function (n) {
       n.classList.toggle("active", n.dataset.view === view);
     });
-    ["dashboard","registrations","licenses","updates","ai"].forEach(function (name) {
+    ["dashboard","registrations","demandes","licenses","updates","ai"].forEach(function (name) {
       var panel = byId("view-" + name);
       if (panel) panel.classList.toggle("hidden", name !== view);
     });
+    // Opening the demands tab clears the "unseen" badge.
+    if (view === "demandes" && state.demandeUnseen > 0) markDemandesSeen();
+  }
+
+  async function markDemandesSeen() {
+    state.demandeUnseen = 0;
+    renderDemandeBadge();
+    try { await apiFetch("/api/admin/install-requests/seen", { method: "POST" }); }
+    catch (e) { /* badge already cleared locally; server will resync on next load */ }
+  }
+
+  function renderDemandeBadge() {
+    if (!el.demandeBadge) return;
+    var n = state.demandeUnseen || 0;
+    el.demandeBadge.textContent = n > 99 ? "99+" : String(n);
+    el.demandeBadge.classList.toggle("hidden", n <= 0);
   }
 
   // ---- loading placeholders -------------------------------------------------
@@ -879,12 +950,25 @@ export const ADMIN_JS = `(function () {
     renderTelemetry();
   }
 
+  function applyDemandes(data) {
+    state.demandes = data.rows || [];
+    state.demandesSeenAt = data.seen_at || "";
+    // Don't flash the badge while the demands tab is already open — the user is
+    // looking at them, so they aren't "unseen".
+    state.demandeUnseen = state.view === "demandes" ? 0 : (data.unseen || 0);
+    state.loading.demandes = false;
+    renderDemandeBadge();
+    renderDemandes();
+    if (state.view === "demandes" && (data.unseen || 0) > 0) markDemandesSeen();
+  }
+
   var SECTIONS = [
     { key: "doctors", path: "/api/admin/doctors", apply: applyDoctors },
     { key: "registrations", path: "/api/admin/registrations", apply: applyRegistrations },
     { key: "licenses", path: "/api/admin/licenses", apply: applyLicenses },
     { key: "releases", path: "/api/admin/releases", apply: applyReleases },
-    { key: "telemetry", path: "/api/admin/update-telemetry", apply: applyTelemetry }
+    { key: "telemetry", path: "/api/admin/update-telemetry", apply: applyTelemetry },
+    { key: "demandes", path: "/api/admin/install-requests", apply: applyDemandes }
   ];
 
   // Resolves once every section has settled. Rejects only if all of them failed,
@@ -927,6 +1011,8 @@ export const ADMIN_JS = `(function () {
     renderLicenses();
     renderReleases();
     renderTelemetry();
+    renderDemandes();
+    renderDemandeBadge();
   }
 
   // Refresh after a mutation. The action already reported success, so failures
@@ -1154,6 +1240,7 @@ export const ADMIN_JS = `(function () {
         expiryLine + '</td>' +
         '<td class="row-actions">' +
           (keyDisplay !== "—" ? '<button class="btn ghost" type="button" data-action="license-copy" data-id="' + escapeHtml(r.id) + '">Copier</button>' : "") +
+          (r.serial_key && r.status !== "revoked" ? '<button class="btn ghost" type="button" data-action="license-email" data-id="' + escapeHtml(r.id) + '">Email</button>' : "") +
           (r.status !== "revoked" ? '<button class="btn ghost" type="button" data-action="license-edit" data-id="' + escapeHtml(r.id) + '">Modifier</button>' : "") +
           (r.status !== "revoked" ? '<button class="btn danger" type="button" data-action="license-revoke" data-id="' + escapeHtml(r.id) + '">Révoquer</button>' : "") +
           (r.status === "generated" ? '<button class="btn danger" type="button" data-action="license-delete" data-id="' + escapeHtml(r.id) + '">Supprimer</button>' : "") +
@@ -1216,6 +1303,69 @@ export const ADMIN_JS = `(function () {
         '<td class="cell-sub">' + escapeHtml((h.reported_at || "").slice(0, 16).replace("T", " ")) + '</td></tr>';
     }).join("");
     el.telemetryRows.innerHTML = '<table class="data-table"><thead><tr><th>Médecin</th><th>Version</th><th>Canal</th><th>Statut</th><th>Vu</th></tr></thead><tbody>' + html + '</tbody></table>';
+  }
+
+  function filteredDemandes() {
+    var q = state.demandeQuery.trim().toLowerCase();
+    return state.demandes.filter(function (r) {
+      var ok = state.demandeStatusFilter === "all" || r.status === state.demandeStatusFilter;
+      var hay = [r.full_name, r.nom, r.prenom, r.specialite, r.phone, r.telephone, r.email, r.ville, r.cabinet].join(" ").toLowerCase();
+      return ok && (!q || hay.indexOf(q) !== -1);
+    });
+  }
+
+  function formatDemandeDate(value) {
+    if (!value) return "—";
+    return String(value).replace("T", " ").slice(0, 16);
+  }
+
+  function renderDemandes() {
+    if (!el.demandeRows) return;
+    if (state.loading.demandes) {
+      el.demandeCount.textContent = "…";
+      el.demandeRows.innerHTML = skeletonTable(["Médecin", "Contact", "Cabinet", "Reçue", ""], 5);
+      return;
+    }
+    var rows = filteredDemandes();
+    el.demandeCount.textContent = rows.length;
+    if (!rows.length) { el.demandeRows.innerHTML = '<div class="empty">Aucune demande d\\'installation pour le moment.</div>'; return; }
+    var seenAt = state.demandesSeenAt || "";
+    var html = rows.map(function (r) {
+      var stCls = r.status === "contacted" ? "green" : r.status === "archived" ? "red" : "amber";
+      var isNew = seenAt && (r.created_at || "") > seenAt;
+      return '<tr>' +
+        '<td><div class="cell-title">' + escapeHtml(r.full_name || r.nom || "—") +
+          (isNew ? ' ' + badge("blue", "Nouveau") : "") + '</div>' +
+          '<div class="cell-sub">' + escapeHtml(r.specialite || "") + (r.ville ? " · " + escapeHtml(r.ville) : "") + '</div>' +
+          badge(stCls, DEMANDE_STATUS[r.status] || r.status) + '</td>' +
+        '<td><div class="cell-sub">' + escapeHtml(r.email || "") + '</div><div class="cell-sub">' + escapeHtml(r.telephone || "") + '</div></td>' +
+        '<td><div class="cell-sub">' + escapeHtml(r.cabinet || "—") + '</div></td>' +
+        '<td><div class="cell-sub">' + escapeHtml(formatDemandeDate(r.created_at)) + '</div></td>' +
+        '<td class="row-actions">' +
+          (r.email ? '<button class="btn ghost" type="button" data-action="demande-mail" data-id="' + escapeHtml(r.id) + '" data-email="' + escapeHtml(r.email) + '">Écrire</button>' : "") +
+          (r.status !== "contacted" ? '<button class="btn ghost" type="button" data-action="demande-contacted" data-id="' + escapeHtml(r.id) + '">Marquer contactée</button>' : "") +
+          (r.status !== "archived" ? '<button class="btn ghost" type="button" data-action="demande-archive" data-id="' + escapeHtml(r.id) + '">Archiver</button>' : "") +
+          '<button class="btn danger" type="button" data-action="demande-delete" data-id="' + escapeHtml(r.id) + '">Supprimer</button>' +
+        '</td></tr>';
+    }).join("");
+    el.demandeRows.innerHTML = '<table class="data-table"><thead><tr><th>Médecin</th><th>Contact</th><th>Cabinet</th><th>Reçue</th><th></th></tr></thead><tbody>' + html + '</tbody></table>';
+  }
+
+  function setDemandeStatus(id, status, btn) {
+    rowAction(btn, "", function () {
+      return apiFetch("/api/admin/install-requests/" + encodeURIComponent(id), { method: "PATCH", body: { status: status } });
+    }, status === "contacted" ? "Demande marquée contactée" : "Demande archivée");
+  }
+
+  function deleteDemande(id, btn) {
+    rowAction(btn, "Supprimer cette demande ?", function () {
+      return apiFetch("/api/admin/install-requests/" + encodeURIComponent(id), { method: "DELETE" });
+    }, "Demande supprimée");
+  }
+
+  // Opens the doctor's email client pre-addressed to the demand's email.
+  function mailDemande(id, email) {
+    if (email) window.location.href = "mailto:" + encodeURIComponent(email);
   }
 
   async function importGithubRelease() {
@@ -1489,8 +1639,41 @@ export const ADMIN_JS = `(function () {
       // Show the key as soon as the server has it; the table catches up after.
       el.generatedSerialKey.value = result.serial_key || "";
       el.generatedSerialMeta.textContent = result.license ? (result.license.license_type === "trial" ? "Essai " + result.license.trial_days + " jours" : "Licence à vie") : "";
+      // Remember which licence this dialog is for, so "Envoyer par email" knows
+      // the id and can prefill the linked doctor's address.
+      state.pendingLicenseEmailId = result.license ? result.license.id : "";
+      state.pendingLicenseEmail = result.license ? (result.license.registration_email || "") : "";
       el.serialDialog.showModal();
       refreshData();
+    } catch (err) { showToast(err.message, true); }
+    finally { setBusy(btn, false); }
+  }
+
+  // Opens the "send licence by email" dialog for a given licence id, prefilling
+  // the doctor's address when the licence is linked to a registration.
+  function openLicenseEmailDialog(id, presetEmail) {
+    var lic = findLicense(id);
+    state.pendingLicenseEmailId = id;
+    el.licenseEmailForm.reset();
+    var key = lic ? (lic.serial_key || lic.key_hint || "") : el.generatedSerialKey.value;
+    el.licenseEmailKeyMeta.textContent = key ? ("Clé : " + key) : "";
+    el.licenseEmailAddress.value = presetEmail || (lic && lic.registration_email) || state.pendingLicenseEmail || "";
+    el.licenseEmailDialog.showModal();
+  }
+
+  async function sendLicenseEmail(e) {
+    e.preventDefault();
+    var id = state.pendingLicenseEmailId;
+    if (!id) { showToast("Licence introuvable", true); return; }
+    var btn = el.licenseEmailForm.querySelector('button[type="submit"]');
+    var email = el.licenseEmailAddress.value.trim();
+    setBusy(btn, true);
+    try {
+      var result = await apiFetch("/api/admin/licenses/" + encodeURIComponent(id) + "/send-email", {
+        method: "POST", body: { email: email }
+      });
+      el.licenseEmailDialog.close();
+      showToast("Clé envoyée à " + (result.sent_to || email));
     } catch (err) { showToast(err.message, true); }
     finally { setBusy(btn, false); }
   }
@@ -1722,6 +1905,8 @@ export const ADMIN_JS = `(function () {
     el.regStatusFilter.addEventListener("change", function () { state.regStatusFilter = el.regStatusFilter.value; renderRegistrations(); });
     el.licenseSearchInput.addEventListener("input", function () { state.licenseQuery = el.licenseSearchInput.value; renderLicenses(); });
     el.licenseStatusFilter.addEventListener("change", function () { state.licenseStatusFilter = el.licenseStatusFilter.value; renderLicenses(); });
+    el.demandeSearchInput.addEventListener("input", function () { state.demandeQuery = el.demandeSearchInput.value; renderDemandes(); });
+    el.demandeStatusFilter.addEventListener("change", function () { state.demandeStatusFilter = el.demandeStatusFilter.value; renderDemandes(); });
     el.searchInput.addEventListener("input", function () { state.query = el.searchInput.value; renderDoctors(); });
     el.keyFilter.addEventListener("change", function () { state.keyFilter = el.keyFilter.value; renderDoctors(); });
     el.regRows.addEventListener("click", function (e) {
@@ -1742,7 +1927,20 @@ export const ADMIN_JS = `(function () {
         "release-delete": deleteRelease
       });
     });
-    el.licenseRows.addEventListener("click", function (e) { handleTableClick(e, { "license-copy": copyLicenseKey, "license-edit": openLicenseEditDialog, "license-revoke": revokeLicense, "license-delete": deleteLicense }); });
+    el.licenseRows.addEventListener("click", function (e) { handleTableClick(e, { "license-copy": copyLicenseKey, "license-email": function (id) { openLicenseEmailDialog(id); }, "license-edit": openLicenseEditDialog, "license-revoke": revokeLicense, "license-delete": deleteLicense }); });
+    el.demandeRows.addEventListener("click", function (e) {
+      var btn = e.target.closest("button[data-action]");
+      if (!btn || btn.__busy) return;
+      var action = btn.dataset.action, id = btn.dataset.id;
+      if (action === "demande-mail") mailDemande(id, btn.dataset.email);
+      else if (action === "demande-contacted") setDemandeStatus(id, "contacted", btn);
+      else if (action === "demande-archive") setDemandeStatus(id, "archived", btn);
+      else if (action === "demande-delete") deleteDemande(id, btn);
+    });
+    el.serialSendEmailButton.addEventListener("click", function () {
+      openLicenseEmailDialog(state.pendingLicenseEmailId, state.pendingLicenseEmail);
+    });
+    el.licenseEmailForm.addEventListener("submit", sendLicenseEmail);
     el.keyRows.addEventListener("click", function (e) { handleTableClick(e, { "edit-key": function (id) { openKeyDialog(findKey(id)); }, "delete-key": deleteKey }); });
     el.doctorRows.addEventListener("click", function (e) { handleTableClick(e, { "edit-doctor": function (id) { openDoctorDialog(findDoctor(id)); }, "logs": openLogs, "delete-doctor": deleteDoctor }); });
     document.addEventListener("click", function (e) {
@@ -1757,6 +1955,7 @@ export const ADMIN_JS = `(function () {
     ["loginScreen","loginForm","loginUsername","loginPassword","loginSubmit","appShell","sidebarNav",
      "userDisplayName","userAvatar","pageKicker","pageTitle","refreshButton","logoutButton","mainContent","topbarProgress",
      "licenseMetrics","updateMetrics","metrics","regSearchInput","regStatusFilter","regCount","regRows",
+     "demandeBadge","demandeSearchInput","demandeStatusFilter","demandeCount","demandeRows",
      "licenseSearchInput","licenseStatusFilter","licenseCount","licenseRows","newLicenseButtonAlt",
      "newReleaseButton","importGithubReleaseButton","releaseCount","releaseRows","telemetryCount","telemetryRows",
      "newKeyButton","newDoctorButton","keyCount","keyRows","searchInput","keyFilter","doctorCount","doctorRows",
@@ -1764,7 +1963,8 @@ export const ADMIN_JS = `(function () {
      "licenseEditDialog","licenseEditForm","licenseEditId","licenseEditSerial","licenseEditStatus","licenseEditExpires","licenseEditRegistration","licenseEditType","licenseEditTrialWrap","licenseEditTrialDays","licenseEditNote",
      "releaseDialog","releaseForm","releaseDialogMode","releaseDialogTitle","releaseId","releaseVersion","releaseChannel","releaseSeverity","releaseSku","releaseRollout","releaseStatus","releaseNotes","releaseArtifactUrl","releaseArtifactSignature","releaseMigrationRisk",
      "entitlementDialog","entitlementForm","entitlementRegId","entitlementRegLabel","entitlementSku","entitlementChannel","entitlementNote",
-     "serialDialog","generatedSerialKey","generatedSerialMeta",
+     "serialDialog","generatedSerialKey","generatedSerialMeta","serialSendEmailButton",
+     "licenseEmailDialog","licenseEmailForm","licenseEmailKeyMeta","licenseEmailAddress",
      "keyDialog","keyForm","keyDialogMode","keyDialogTitle","keyId","keyName","keyProvider","keyModel","keySecret","keyActive","clearKeyWrap","clearKeySecret",
      "doctorDialog","doctorForm","doctorDialogMode","doctorDialogTitle","doctorId","doctorEmail","doctorAssignedKey","doctorMonthlyLimit","doctorDailyLimit","doctorActive","doctorAiEnabled","doctorUsageTools","setMonthlyUsed","setDailyUsed","resetMonthly","resetDaily",
      "cloudDoctorDialog","cloudDoctorRegName","cloudDoctorRegEmail","cloudDoctorAssignedKey","cloudDoctorMonthlyLimit","cloudDoctorDailyLimit","cloudDoctorActive","cloudDoctorAiEnabled","cloudDoctorSubmit","cloudDoctorSkip",

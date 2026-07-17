@@ -29,6 +29,10 @@ import {
   handleUpdatesPublishRoute,
   verifyUpdatePublishToken,
 } from "./updates.js";
+import {
+  handleInstallRequestPublicRoutes,
+  handleInstallRequestAdminRoutes,
+} from "./install-requests.js";
 
 const CLOUD_NOT_PROVISIONED_MSG =
   "L'accès IA n'est pas encore activé. Contactez votre administrateur MediSmart.";
@@ -803,6 +807,9 @@ async function handleRequest(req, res) {
     // ---- updates: desktop check / entitlements / heartbeat (public) ----
     if (await handleUpdatesPublicRoutes(req, res, path, { readJson, ok, err })) return;
 
+    // ---- install demands from the landing page (public) ----
+    if (await handleInstallRequestPublicRoutes(req, res, path, { readJson, ok, err })) return;
+
     // ---- CI release publish with UPDATE_PUBLISH_TOKEN (no admin session needed) ----
     if (path === "/api/admin/releases/publish" && req.method === "POST") {
       if (verifyUpdatePublishToken(req)) {
@@ -1018,6 +1025,9 @@ async function handleRequest(req, res) {
         adminUsername: session.username || "",
         adminSession: session,
       })) return;
+
+      // Install demands (landing-page leads).
+      if (await handleInstallRequestAdminRoutes(req, res, path, { readJson, ok, err })) return;
 
       // Same publish endpoint also usable with admin session.
       if (await handleUpdatesPublishRoute(req, res, path, {
