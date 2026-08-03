@@ -33,6 +33,20 @@ import {
   handleInstallRequestPublicRoutes,
   handleInstallRequestAdminRoutes,
 } from "./install-requests.js";
+import { handleAiModelsAdminRoutes } from "./ai-models.js";
+import { handleAiConnectorsAdminRoutes } from "./ai-connectors.js";
+import { handleAiPromptsAdminRoutes } from "./ai-prompts.js";
+import { handleAiCatalogAdminRoutes } from "./ai-catalog.js";
+import { handleAiKnowledgeBaseAdminRoutes } from "./ai-knowledge-base.js";
+import { handleAiFlagsAdminRoutes } from "./ai-flags.js";
+import { handleAiPlansAdminRoutes } from "./ai-plans.js";
+import { handleAiRouterAdminRoutes } from "./ai-router.js";
+import { handleAiKeysAdminRoutes } from "./ai-keys.js";
+import { handleAiUsageAdminRoutes } from "./ai-usage.js";
+import { handleAiSettingsAdminRoutes } from "./ai-settings.js";
+import { handleAiAuditAdminRoutes } from "./ai-audit.js";
+import { handleAiBrainRoutes, handleAiPlaygroundRoute, handleAiFeedbackRoute } from "./ai-brain.js";
+import { getCreditCosts, readLogs } from "./doctor-usage.js";
 
 const CLOUD_NOT_PROVISIONED_MSG =
   "L'accès IA n'est pas encore activé. Contactez votre administrateur MediSmart.";
@@ -72,15 +86,6 @@ const AI_PROVIDERS = {
   },
 };
 
-const GROQ_CHAT_URL = "https://api.groq.com/openai/v1/chat/completions";
-const GEMINI_GENERATE_URL = "https://generativelanguage.googleapis.com/v1beta/models";
-
-// Vision-capable fallback models, used automatically when an image is sent but
-// the doctor's assigned model is text-only. Same provider + same API key, so no
-// extra credentials are required.
-const GROQ_VISION_MODEL = process.env.GROQ_VISION_MODEL || "meta-llama/llama-4-scout-17b-16e-instruct";
-const GEMINI_VISION_MODEL = process.env.GEMINI_VISION_MODEL || "gemini-2.5-flash";
-
 const DEFAULT_LIMITS = {
   monthly_limit: 500,
   daily_limit: 50,
@@ -88,16 +93,6 @@ const DEFAULT_LIMITS = {
 
 const COMPAT_PLANS = {
   custom: { label: "Custom limits", monthly_credits: DEFAULT_LIMITS.monthly_limit, unlimited: false },
-};
-
-const DEFAULT_COSTS = {
-  chat: 1,
-  lab_analysis: 3,
-  pdf_analysis: 3,
-  ecg_analysis: 3,
-  image_analysis: 3,
-  multimodal_analysis: 3,
-  irm_analysis: 3,
 };
 
 // ---------- helpers ----------
@@ -342,6 +337,7 @@ function ensureDoctorDefaults(doctor) {
   doctor.monthly_used = toLimit(doctor.monthly_used ?? doctor.used_credits, 0);
   doctor.daily_used = toLimit(doctor.daily_used, 0);
   doctor.assigned_api_key_id = String(doctor.assigned_api_key_id || doctor.api_key_id || "").trim();
+  doctor.ai_plan_id = String(doctor.ai_plan_id || "").trim();
 
   if (typeof doctor.ai_enabled !== "boolean") doctor.ai_enabled = true;
   if (typeof doctor.active !== "boolean") doctor.active = true;
@@ -417,21 +413,13 @@ async function adminDoctorWithAssignedKey(doctor) {
   return adminDoctorState(doctor, apiKey);
 }
 
-async function getCreditCosts() {
-  const stored = await redis.get("config:credit_costs");
-  return { ...DEFAULT_COSTS, ...(stored || {}), chat: 1, lab_analysis: 3, pdf_analysis: 3, ecg_analysis: 3, image_analysis: 3, multimodal_analysis: 3, irm_analysis: 3 };
-}
-
-function creditCostFor(costs, action) {
-  return String(action || "chat") === "chat" ? (costs.chat ?? 1) : 3;
-}
-
 function applyDoctorUpdate(doctor, body) {
   if (body.email !== undefined) doctor.email = String(body.email || "").trim();
   if (body.name !== undefined) doctor.name = String(body.name || "").trim() || displayNameFromEmail(doctor.email);
   if (body.monthly_limit !== undefined) doctor.monthly_limit = toLimit(body.monthly_limit, doctor.monthly_limit || DEFAULT_LIMITS.monthly_limit);
   if (body.daily_limit !== undefined) doctor.daily_limit = toLimit(body.daily_limit, doctor.daily_limit || DEFAULT_LIMITS.daily_limit);
   if (body.assigned_api_key_id !== undefined) doctor.assigned_api_key_id = String(body.assigned_api_key_id || "").trim();
+  if (body.ai_plan_id !== undefined) doctor.ai_plan_id = String(body.ai_plan_id || "").trim();
   if (body.api_key_id !== undefined) doctor.assigned_api_key_id = String(body.api_key_id || "").trim();
   if (body.ai_enabled !== undefined) doctor.ai_enabled = !!body.ai_enabled;
   if (body.active !== undefined) doctor.active = !!body.active;
@@ -445,308 +433,6 @@ function applyDoctorUpdate(doctor, body) {
     doctor.daily_used = 0;
     doctor.daily_usage_date = today();
   }
-}
-
-// ---------- credit logs ----------
-async function logCreditAction(doctorId, action, credits, success, cached, details = "") {
-  const entry = {
-    id: uuid(),
-    doctor_id: doctorId,
-    action_type: action,
-    credits_used: credits,
-    success: !!success,
-    cached: !!cached,
-    details: String(details || "").slice(0, 500),
-    created_at: nowIso(),
-  };
-  await redis.lpush(`logs:${doctorId}`, JSON.stringify(entry));
-  await redis.ltrim(`logs:${doctorId}`, 0, 499);
-  return entry;
-}
-
-async function readLogs(doctorId, limit = 50) {
-  const raw = await redis.lrange(`logs:${doctorId}`, 0, limit - 1);
-  return (raw || []).map((s) => {
-    try { return typeof s === "string" ? JSON.parse(s) : s; } catch { return null; }
-  }).filter(Boolean);
-}
-
-// ---------- AI providers ----------
-function normalizeRole(role) {
-  const clean = String(role || "user").toLowerCase();
-  if (clean === "system" || clean === "assistant" || clean === "user") return clean;
-  if (clean === "model") return "assistant";
-  return "user";
-}
-
-function dataUrlInfo(url) {
-  const match = /^data:([^;,]+);base64,([\s\S]+)$/i.exec(String(url || ""));
-  if (!match) return null;
-  return {
-    mimeType: match[1].trim().toLowerCase(),
-    data: match[2].replace(/\s/g, ""),
-  };
-}
-
-function normalizeImageUrlPart(part) {
-  const rawImage = part?.image_url || part?.imageUrl || part?.input_image || part?.image || {};
-  const url = typeof rawImage === "string" ? rawImage : rawImage.url || rawImage.data_url || rawImage.dataUrl;
-  if (!url) return null;
-  return {
-    type: "image_url",
-    image_url: {
-      url: String(url),
-      detail: rawImage.detail || part.detail || "high",
-    },
-  };
-}
-
-function normalizeFilePart(part) {
-  const rawFile = part?.file || part?.input_file || {};
-  const url = rawFile.url || rawFile.data_url || rawFile.dataUrl || part.url;
-  if (!url) return null;
-  return {
-    type: "input_file",
-    file: {
-      filename: rawFile.filename || part.filename || "document",
-      url: String(url),
-    },
-  };
-}
-
-function normalizeContentPart(part) {
-  if (typeof part === "string") {
-    const text = part.trim();
-    return text ? { type: "text", text } : null;
-  }
-  if (!part || typeof part !== "object") return null;
-  const type = String(part.type || "").toLowerCase();
-  if (type === "image_url" || type === "input_image" || part.image_url || part.imageUrl) {
-    return normalizeImageUrlPart(part);
-  }
-  if (type === "input_file" || type === "file" || part.file || part.input_file) {
-    return normalizeFilePart(part);
-  }
-  if (type === "text" || type === "input_text" || part.text || part.input_text) {
-    const text = String(part.text || part.input_text || "").trim();
-    return text ? { type: "text", text } : null;
-  }
-  const text = String(part.content || part.message || "").trim();
-  return text ? { type: "text", text } : null;
-}
-
-function normalizeMessageContent(content) {
-  if (typeof content === "string") return content.trim();
-  if (Array.isArray(content)) {
-    const parts = content.map(normalizeContentPart).filter(Boolean);
-    return parts.length ? parts : "";
-  }
-  if (content && typeof content === "object") {
-    const part = normalizeContentPart(content);
-    return part ? [part] : "";
-  }
-  return "";
-}
-
-function messageText(content) {
-  if (typeof content === "string") return content;
-  if (Array.isArray(content)) {
-    return content.map((part) => {
-      if (typeof part === "string") return part;
-      if (!part || typeof part !== "object") return "";
-      if (part.type === "image_url") return "[image jointe]";
-      if (part.type === "input_file" || part.type === "file") return `[fichier joint: ${part.file?.filename || "document"}]`;
-      return part.text || part.input_text || "";
-    }).filter(Boolean).join("\n");
-  }
-  if (content && typeof content === "object") {
-    if (content.type === "image_url") return "[image jointe]";
-    if (content.type === "input_file" || content.type === "file") return `[fichier joint: ${content.file?.filename || "document"}]`;
-    return content.text || content.input_text || content.content || "";
-  }
-  return "";
-}
-
-function hasMessageContent(content) {
-  if (typeof content === "string") return Boolean(content.trim());
-  if (!Array.isArray(content)) return false;
-  return content.some((part) => {
-    if (!part || typeof part !== "object") return false;
-    if (part.type === "text") return Boolean(String(part.text || "").trim());
-    if (part.type === "image_url") return Boolean(part.image_url?.url);
-    if (part.type === "input_file") return Boolean(part.file?.url);
-    return false;
-  });
-}
-
-function contentHasImage(content) {
-  return Array.isArray(content) && content.some((part) => part?.type === "image_url" && part.image_url?.url);
-}
-
-function messagesHaveImages(messages) {
-  return messages.some((message) => contentHasImage(message.content));
-}
-
-function contentHasFiles(content) {
-  return Array.isArray(content) && content.some((part) => part?.type === "input_file" && part.file?.url);
-}
-
-function messagesHaveFiles(messages) {
-  return messages.some((message) => contentHasFiles(message.content));
-}
-
-function modelAcceptsImages(provider, model) {
-  if (provider === "gemini") return true;
-  const clean = String(model || "").toLowerCase();
-  return /(vision|llama-4|scout|maverick|pixtral|qwen.*vl|llava)/.test(clean);
-}
-
-// Returns a vision-capable model for the given provider so image documents
-// (ECG, radiographie, echographie, etc.) can be analysed visually even when the
-// doctor's assigned model is text-only. Uses the same provider/API key.
-function visionModelFor(provider) {
-  if (provider === "gemini") return cleanModel(GEMINI_VISION_MODEL, "gemini");
-  return GROQ_VISION_MODEL;
-}
-
-function normalizeMessages(body) {
-  const source = Array.isArray(body.messages) && body.messages.length
-    ? body.messages
-    : [{ role: "user", content: (body.message || "").toString() }];
-  return source.map((m) => ({
-    role: normalizeRole(m?.role),
-    content: normalizeMessageContent(m?.content ?? ""),
-  })).filter((m) => hasMessageContent(m.content));
-}
-
-async function readUpstreamJson(upstream) {
-  const text = await upstream.text();
-  try { return JSON.parse(text); } catch { return { text }; }
-}
-
-async function callGroqChat({ apiKey, model, messages, maxTokens }) {
-  const upstream = await fetch(GROQ_CHAT_URL, {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model,
-      messages,
-      max_completion_tokens: maxTokens,
-      temperature: 0.15,
-      stream: false,
-    }),
-  });
-  const raw = await readUpstreamJson(upstream);
-  if (!upstream.ok) {
-    const detail = raw?.error?.message || raw?.message || raw?.text || `Groq ${upstream.status}`;
-    throw new Error(detail);
-  }
-  return raw?.choices?.[0]?.message?.content || "";
-}
-
-function geminiTextPart(text) {
-  const clean = String(text || "").trim();
-  return clean ? { text: clean } : null;
-}
-
-function contentToGeminiParts(content) {
-  if (typeof content === "string") {
-    const part = geminiTextPart(content);
-    return part ? [part] : [];
-  }
-  if (!Array.isArray(content)) return [];
-  const parts = [];
-  for (const part of content) {
-    if (!part || typeof part !== "object") continue;
-    if (part.type === "text") {
-      const textPart = geminiTextPart(part.text);
-      if (textPart) parts.push(textPart);
-      continue;
-    }
-    if (part.type === "image_url") {
-      const info = dataUrlInfo(part.image_url?.url);
-      if (info) {
-        parts.push({ inline_data: { mime_type: info.mimeType, data: info.data } });
-      } else {
-        const textPart = geminiTextPart("[image jointe non inline]");
-        if (textPart) parts.push(textPart);
-      }
-    }
-    if (part.type === "input_file") {
-      const info = dataUrlInfo(part.file?.url);
-      if (info) {
-        parts.push({ inline_data: { mime_type: info.mimeType, data: info.data } });
-      } else {
-        const textPart = geminiTextPart(`[fichier joint non inline: ${part.file?.filename || "document"}]`);
-        if (textPart) parts.push(textPart);
-      }
-    }
-  }
-  return parts;
-}
-
-function toGeminiPayload(messages) {
-  const systemParts = [];
-  const contents = [];
-  for (const message of messages) {
-    if (message.role === "system") {
-      const textPart = geminiTextPart(messageText(message.content));
-      if (textPart) systemParts.push(textPart);
-      continue;
-    }
-    const parts = contentToGeminiParts(message.content);
-    if (!parts.length) continue;
-    contents.push({
-      role: message.role === "assistant" ? "model" : "user",
-      parts,
-    });
-  }
-  if (!contents.length && systemParts.length) {
-    contents.push({ role: "user", parts: [{ text: systemParts.map((p) => p.text).join("\n\n") }] });
-  }
-  return {
-    contents,
-    systemInstruction: systemParts.length ? { parts: systemParts } : undefined,
-  };
-}
-
-function geminiModelPath(model) {
-  return cleanModel(model, "gemini").replace(/^models\//, "").split("/").map(encodeURIComponent).join("/");
-}
-
-async function callGeminiChat({ apiKey, model, messages, maxTokens }) {
-  const gemini = toGeminiPayload(messages);
-  const body = {
-    contents: gemini.contents,
-    generationConfig: {
-      maxOutputTokens: maxTokens,
-      temperature: 0.15,
-    },
-  };
-  if (gemini.systemInstruction) body.systemInstruction = gemini.systemInstruction;
-
-  const upstream = await fetch(`${GEMINI_GENERATE_URL}/${geminiModelPath(model)}:generateContent`, {
-    method: "POST",
-    headers: {
-      "x-goog-api-key": apiKey,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-  });
-  const raw = await readUpstreamJson(upstream);
-  if (!upstream.ok) {
-    const detail = raw?.error?.message || raw?.message || raw?.text || `Gemini ${upstream.status}`;
-    throw new Error(detail);
-  }
-  return (raw?.candidates?.[0]?.content?.parts || []).map((part) => part.text || "").join("").trim();
-}
-
-async function callProviderChat({ provider, apiKey, model, messages, maxTokens }) {
-  if (provider === "gemini") return callGeminiChat({ apiKey, model, messages, maxTokens });
-  return callGroqChat({ apiKey, model, messages, maxTokens });
 }
 
 // ---------- main router ----------
@@ -919,79 +605,15 @@ async function handleRequest(req, res) {
       return ok(res, { rows: logs.slice(0, 50), total_used, daily });
     }
 
-    // ---- doctor: AI chat using assigned named key ----
-    if (path === "/api/me/ai/chat" || path === "/api/me/ai/analyze-document") {
-      if (req.method !== "POST") return err(res, 405, "Method not allowed");
-      const doctor = await verifyDoctor(req);
-      if (!doctor) return err(res, 401, "Token medecin invalide");
-      const fresh = ensureDoctorDefaults({ ...doctor });
-      if (!fresh.active || !fresh.ai_enabled) return err(res, 403, "IA desactivee pour ce compte");
-
-      const assignedKey = ensureApiKeyDefaults({ ...(await getApiKey(fresh.assigned_api_key_id) || {}) });
-      if (!fresh.assigned_api_key_id) return err(res, 409, "Aucune cle API assignee a ce medecin.");
-      if (!assignedKey.id || assignedKey.id !== fresh.assigned_api_key_id) return err(res, 409, "Cle API assignee introuvable.");
-      if (!assignedKey.active) return err(res, 409, `La cle API "${assignedKey.name}" est inactive.`);
-      if (!assignedKey.api_key) return err(res, 409, `La cle API "${assignedKey.name}" n'a pas de secret enregistre.`);
-
-      const costs = await getCreditCosts();
-      const body = await readJson(req);
-      const action = (body.action_type || "chat").toString();
-      const cost = creditCostFor(costs, action);
-      const monthlyRemaining = Math.max(0, (fresh.monthly_limit || 0) - (fresh.monthly_used || 0));
-      const dailyRemaining = Math.max(0, (fresh.daily_limit || 0) - (fresh.daily_used || 0));
-      if (monthlyRemaining < cost) return err(res, 402, "Limite mensuelle atteinte");
-      if (dailyRemaining < cost) return err(res, 429, "Limite journaliere atteinte");
-
-      const messages = normalizeMessages(body);
-      if (!messages.length) return err(res, 400, "Message requis");
-      const maxTokens = Math.min(4096, Math.max(64, parseInt(body.max_tokens || 512, 10)));
-      const provider = normalizeProvider(assignedKey.provider);
-      let model = cleanModel(assignedKey.model, provider);
-      const providerLabel = AI_PROVIDERS[provider].label;
-      if (messagesHaveFiles(messages) && provider !== "gemini") {
-        return err(res, 409, `Le modele ${providerLabel} ${model} ne supporte pas les fichiers PDF joints. Assignez une cle Gemini dans le panneau admin pour analyser les documents visuels.`);
-      }
-      // If an image is attached but the assigned model is text-only, transparently
-      // route this request to a vision-capable model on the same provider so the
-      // document is actually analysed visually instead of being rejected.
-      let modelAutoRouted = false;
-      if (messagesHaveImages(messages) && !modelAcceptsImages(provider, model)) {
-        const visionModel = visionModelFor(provider);
-        if (visionModel && modelAcceptsImages(provider, visionModel)) {
-          model = visionModel;
-          modelAutoRouted = true;
-        } else {
-          return err(res, 409, `Le modele ${providerLabel} ${model} ne supporte pas les images. Assignez une cle Gemini ou un modele vision dans le panneau admin.`);
-        }
-      }
-
-      let assistantText = "";
-      try {
-        assistantText = await callProviderChat({ provider, apiKey: assignedKey.api_key, model, messages, maxTokens });
-      } catch (e) {
-        await logCreditAction(fresh.id, action, 0, false, false, `${assignedKey.name}: ${e.message}`);
-        return err(res, 502, `Erreur ${providerLabel}: ${e.message}`);
-      }
-
-      fresh.monthly_used = (fresh.monthly_used || 0) + cost;
-      fresh.daily_used = (fresh.daily_used || 0) + cost;
-      fresh.daily_usage_date = today();
-      await saveDoctor(fresh);
-      await logCreditAction(fresh.id, action, cost, true, false, `${assignedKey.name} (${providerLabel} ${model})${modelAutoRouted ? " [vision auto]" : ""}`);
-
-      return ok(res, {
-        content: assistantText,
-        provider,
-        model,
-        model_auto_routed: modelAutoRouted,
-        api_key_name: assignedKey.name,
-        credits_used: cost,
-        monthly_remaining: Math.max(0, fresh.monthly_limit - fresh.monthly_used),
-        daily_remaining: Math.max(0, fresh.daily_limit - fresh.daily_used),
-        credits_remaining: Math.max(0, fresh.monthly_limit - fresh.monthly_used),
-        safety_note: "Analyse IA a verifier par le medecin. Aucun diagnostic ou prescription automatique.",
-      });
-    }
+    // ---- doctor: AI chat / document analysis ----
+    // Fully owned by the AI Management brain (api/ai-brain.js): license/
+    // subscription validation, prompt library + versioning, model router
+    // (+ fallback chain), AI plan model gating, feature flags, guideline
+    // injection, provider call, usage/cost/log recording. Same public paths
+    // and response shapes the desktop app already calls - refactored
+    // in-place rather than duplicated under a second endpoint.
+    if (await handleAiBrainRoutes(req, res, path, { readJson, ok, err })) return;
+    if (await handleAiFeedbackRoute(req, res, path, { readJson, ok, err })) return;
 
     // =============================================================
     // SUPER ADMIN ENDPOINTS (require X-Admin-Token)
@@ -1028,6 +650,24 @@ async function handleRequest(req, res) {
 
       // Install demands (landing-page leads).
       if (await handleInstallRequestAdminRoutes(req, res, path, { readJson, ok, err })) return;
+
+      // ---- AI Management admin routes (models, prompts, specialties,
+      // clinical tasks, guidelines, flags, plans, router, keys, usage,
+      // costs, logs, audit, settings, testing playground). ----
+      const aiCtx = { readJson, ok, err, session, send };
+      if (await handleAiConnectorsAdminRoutes(req, res, path, aiCtx)) return;
+      if (await handleAiModelsAdminRoutes(req, res, path, aiCtx)) return;
+      if (await handleAiPromptsAdminRoutes(req, res, path, aiCtx)) return;
+      if (await handleAiCatalogAdminRoutes(req, res, path, aiCtx)) return;
+      if (await handleAiKnowledgeBaseAdminRoutes(req, res, path, aiCtx)) return;
+      if (await handleAiFlagsAdminRoutes(req, res, path, aiCtx)) return;
+      if (await handleAiPlansAdminRoutes(req, res, path, aiCtx)) return;
+      if (await handleAiRouterAdminRoutes(req, res, path, aiCtx)) return;
+      if (await handleAiKeysAdminRoutes(req, res, path, aiCtx)) return;
+      if (await handleAiUsageAdminRoutes(req, res, path, aiCtx)) return;
+      if (await handleAiSettingsAdminRoutes(req, res, path, aiCtx)) return;
+      if (await handleAiAuditAdminRoutes(req, res, path, aiCtx)) return;
+      if (await handleAiPlaygroundRoute(req, res, path, aiCtx)) return;
 
       // Same publish endpoint also usable with admin session.
       if (await handleUpdatesPublishRoute(req, res, path, {

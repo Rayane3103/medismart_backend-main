@@ -75,6 +75,10 @@ export const ADMIN_HTML = `<!doctype html>
           <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a4 4 0 0 1 4 4c0 1.95-1.4 3.58-3.25 3.93L12 22l-.75-12.07A4.001 4.001 0 0 1 12 2z"/><path d="M8 6H4a2 2 0 0 0-2 2v1"/><path d="M16 6h4a2 2 0 0 1 2 2v1"/></svg>
           <span>IA &amp; Médecins</span>
         </button>
+        <button type="button" class="nav-item" data-view="ai-management">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18"/><path d="M8 4v6"/></svg>
+          <span>Gestion IA</span>
+        </button>
       </nav>
       <div class="sidebar-foot">
         <div class="sidebar-user">
@@ -233,6 +237,11 @@ export const ADMIN_HTML = `<!doctype html>
             <div class="panel-head"><h2>Comptes médecins IA</h2><span id="doctorCount" class="panel-count">0</span></div>
             <div class="table-wrap" id="doctorRows"></div>
           </section>
+        </div>
+
+        <div class="view hidden" id="view-ai-management">
+          <nav class="ai-subnav" id="aiSubNav"></nav>
+          <div class="ai-content" id="aiContent"></div>
         </div>
       </main>
     </div>
@@ -475,6 +484,17 @@ export const ADMIN_HTML = `<!doctype html>
     </div>
   </dialog>
 
+  <dialog class="modal" id="aiGenericDialog">
+    <form class="modal-card" id="aiGenericForm">
+      <header class="modal-head">
+        <div><h2 id="aiGenericTitle">Élément</h2></div>
+        <button class="icon-close" type="button" data-close-dialog="aiGenericDialog" aria-label="Fermer">×</button>
+      </header>
+      <div class="form-grid" id="aiGenericFields"></div>
+      <footer class="modal-foot"><button class="btn ghost" type="button" data-close-dialog="aiGenericDialog">Annuler</button><button class="btn primary" type="submit">Enregistrer</button></footer>
+    </form>
+  </dialog>
+
   <div class="toast hidden" id="toast"></div>
 </body>
 </html>`;
@@ -672,6 +692,12 @@ input:focus, select:focus { border-color: var(--primary); box-shadow: 0 0 0 3px 
 .log-row { display: grid; grid-template-columns: 130px 100px 70px 1fr; gap: 10px; align-items: center; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; font-size: 12.5px; }
 .toast { position: fixed; right: 18px; bottom: 18px; max-width: 360px; background: #0f172a; color: #fff; padding: 12px 16px; border-radius: 12px; font-weight: 700; font-size: 13px; box-shadow: var(--shadow); z-index: 100; }
 
+.ai-subnav { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+.subnav-item { border: 1px solid var(--line); background: #fff; color: var(--text); padding: 8px 14px; border-radius: 999px; font-size: 12.5px; font-weight: 700; cursor: pointer; }
+.subnav-item.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+.code-block { background: #0f172a; color: #e2e8f0; padding: 14px 16px; border-radius: 10px; font-size: 12.5px; line-height: 1.5; overflow: auto; max-height: 50vh; white-space: pre-wrap; word-break: break-word; }
+.ai-content > section { margin-bottom: 18px; }
+
 @media (max-width: 960px) {
   .app-shell { grid-template-columns: 1fr; }
   .sidebar { position: relative; height: auto; }
@@ -691,7 +717,8 @@ export const ADMIN_JS = `(function () {
     demandes: { kicker: "Site web", title: "Demandes d'installation" },
     licenses: { kicker: "Licences", title: "Clés d'activation" },
     updates: { kicker: "Desktop", title: "Mises à jour" },
-    ai: { kicker: "Intelligence artificielle", title: "IA & Médecins" }
+    ai: { kicker: "Intelligence artificielle", title: "IA & Médecins" },
+    "ai-management": { kicker: "Intelligence artificielle", title: "Gestion IA" }
   };
 
   var REG_STATUS = { pending_activation: "En attente", activated: "Activé" };
@@ -722,6 +749,781 @@ export const ADMIN_JS = `(function () {
 
   var el = {};
   function byId(id) { return document.getElementById(id); }
+
+  // =========================================================================
+  // AI MANAGEMENT — new section, separate from the legacy "IA & Médecins"
+  // (data-view="ai") view above. Schema-driven generic CRUD for the simple
+  // catalog entities (specialties, tasks, guidelines, flags, plans, models,
+  // keys) plus dedicated renderers for Prompts, Router, Usage/Costs/Logs/
+  // Audit, Settings and the Testing Playground.
+  // =========================================================================
+
+  var CONNECTOR_TYPES = ["openai_compatible", "anthropic", "gemini", "local"];
+
+  // Connector options are unknown until the admin has created some (this is
+  // what makes providers unlimited/dynamic instead of a fixed enum) - fields
+  // with dynamicOptions:"connectors" are resolved from aiState.connectors at
+  // render time instead of a static list (see renderAiGenericFields).
+  function connectorSelectOptions() {
+    return (aiState.connectors || []).map(function (c) { return { value: c.id, label: c.name + " (" + c.type + ")" }; });
+  }
+
+  var AI_ENTITIES = {
+    connectors: { base: "/api/admin/ai/connectors", label: "Connecteur fournisseur", columns: ["name", "type", "enabled", "health_status", "priority"], fields: [
+      { key: "name", label: "Nom", required: true },
+      { key: "type", label: "Type", type: "select", default: "openai_compatible", options: CONNECTOR_TYPES.map(function (v) { return { value: v, label: v }; }) },
+      { key: "base_url", label: "Base URL (API)", required: true },
+      { key: "azure_api_version", label: "Azure API version (si Azure OpenAI)" },
+      { key: "enabled", label: "Activé", type: "checkbox", default: true },
+      { key: "priority", label: "Priorité", type: "number", default: 100 },
+      { key: "timeout_ms", label: "Timeout (ms)", type: "number", default: 60000 },
+      { key: "retries", label: "Retries", type: "number", default: 1 }
+    ] },
+    specialties: { base: "/api/admin/ai/specialties", label: "Spécialité", columns: ["name", "description", "active"], fields: [
+      { key: "name", label: "Nom", required: true },
+      { key: "description", label: "Description" },
+      { key: "active", label: "Active", type: "checkbox", default: true }
+    ] },
+    tasks: { base: "/api/admin/ai/tasks", label: "Tâche clinique", columns: ["name", "action_type", "active"], fields: [
+      { key: "name", label: "Nom", required: true },
+      { key: "description", label: "Description" },
+      { key: "action_type", label: "Action type (signal envoyé par le desktop)", type: "select", default: "chat", options: ["chat", "lab_analysis", "pdf_analysis", "ecg_analysis", "image_analysis", "multimodal_analysis", "irm_analysis"].map(function (v) { return { value: v, label: v }; }) },
+      { key: "active", label: "Active", type: "checkbox", default: true }
+    ] },
+    guidelines: { base: "/api/admin/ai/guidelines", label: "Guideline", columns: ["org", "disease", "version", "status", "publication_year"], fields: [
+      { key: "org", label: "Organisation", type: "select", options: ["ESC", "AHA", "ACC", "WHO", "ADA", "KDIGO", "GOLD", "ATS", "ERS", "NICE", "EULAR", "ESMO", "IDSA", "Surviving Sepsis Campaign", "CDC"].map(function (v) { return { value: v, label: v }; }), required: true },
+      { key: "title", label: "Titre" },
+      { key: "disease", label: "Pathologie / sujet" },
+      { key: "publication_year", label: "Année de publication", type: "number" },
+      { key: "source_url", label: "URL source (document officiel)" },
+      { key: "status", label: "Statut", type: "select", default: "draft", options: ["draft", "published", "deprecated"].map(function (v) { return { value: v, label: v }; }) },
+      { key: "default_evidence_level", label: "Niveau de preuve par défaut", type: "select", options: ["", "A", "B", "C", "D", "I", "IIa", "IIb", "III"].map(function (v) { return { value: v, label: v || "—" }; }) },
+      { key: "default_recommendation_class", label: "Classe de recommandation par défaut", type: "select", options: ["", "I", "IIa", "IIb", "III", "Strong", "Conditional"].map(function (v) { return { value: v, label: v || "—" }; }) },
+      { key: "summary_fr", label: "Résumé (Français)", type: "textarea" },
+      { key: "summary_en", label: "Summary (English)", type: "textarea" },
+      { key: "summary_ar", label: "الملخص (العربية)", type: "textarea" },
+      { key: "sections_json", label: "Sections structurées (JSON - recommandations/critères/scores/algorithmes/contre-indications/signaux d'alerte/références)", type: "textarea" }
+    ] },
+    flags: { base: "/api/admin/ai/flags", label: "Feature flag", idField: "key", columns: ["key", "description", "enabled", "rollout_pct"], fields: [
+      { key: "key", label: "Clé", required: true, lockOnEdit: true },
+      { key: "description", label: "Description" },
+      { key: "enabled", label: "Activé", type: "checkbox" },
+      { key: "rollout_pct", label: "Rollout %", type: "number", default: 100 }
+    ] },
+    plans: { base: "/api/admin/ai/plans", label: "AI Plan", columns: ["name", "monthly_limit", "daily_limit", "rate_limit_per_min", "active"], fields: [
+      { key: "name", label: "Nom", required: true },
+      { key: "description", label: "Description" },
+      { key: "monthly_limit", label: "Limite mensuelle", type: "number", default: 500 },
+      { key: "daily_limit", label: "Limite journalière", type: "number", default: 50 },
+      { key: "rate_limit_per_min", label: "Rate limit / min", type: "number", default: 10 },
+      { key: "active", label: "Actif", type: "checkbox", default: true }
+    ] },
+    models: { base: "/api/admin/ai/models", label: "Modèle IA", columns: ["name", "provider", "model_id", "enabled", "priority"], fields: [
+      { key: "name", label: "Nom", required: true },
+      { key: "connector_id", label: "Connecteur", type: "select", dynamicOptions: "connectors" },
+      { key: "model_id", label: "ID modèle (ex: openai/gpt-5)", required: true },
+      { key: "enabled", label: "Activé", type: "checkbox", default: true },
+      { key: "priority", label: "Priorité", type: "number", default: 100 },
+      { key: "temperature", label: "Température", type: "number", step: "0.1", default: 0.2 },
+      { key: "top_p", label: "Top P", type: "number", step: "0.1", default: 1 },
+      { key: "max_tokens", label: "Max tokens", type: "number", default: 2048 },
+      { key: "timeout_ms", label: "Timeout (ms)", type: "number", default: 60000 },
+      { key: "retry", label: "Retry", type: "number", default: 1 },
+      { key: "price_per_million_in", label: "Prix / M tokens (in, $)", type: "number", step: "0.01", default: 0 },
+      { key: "price_per_million_out", label: "Prix / M tokens (out, $)", type: "number", step: "0.01", default: 0 },
+      { key: "context_window", label: "Fenêtre de contexte", type: "number", default: 128000 },
+      { key: "reasoning_level", label: "Reasoning", type: "select", options: ["none", "low", "medium", "high"].map(function (v) { return { value: v, label: v }; }) },
+      { key: "vision", label: "Vision", type: "checkbox" },
+      { key: "json_mode", label: "JSON mode", type: "checkbox" },
+      { key: "streaming", label: "Streaming", type: "checkbox" }
+    ] },
+    keys: { base: "/api/admin/ai/keys", label: "Clé API fournisseur", columns: ["name", "connector_name", "key_hint", "active"], fields: [
+      { key: "name", label: "Nom", required: true },
+      { key: "connector_id", label: "Connecteur", type: "select", dynamicOptions: "connectors" },
+      { key: "api_key", label: "Secret API (laisser vide pour ne pas changer)", type: "password" },
+      { key: "active", label: "Active", type: "checkbox", default: true }
+    ] }
+  };
+
+  var AI_SUBVIEWS = ["dashboard", "connectors", "models", "prompts", "specialties", "tasks", "guidelines", "router", "flags", "plans", "keys", "usage", "costs", "logs", "audit", "settings", "playground"];
+  var AI_SUBVIEW_LABELS = {
+    dashboard: "Tableau de bord", connectors: "Connecteurs", models: "Modèles", prompts: "Prompt Library", specialties: "Spécialités",
+    tasks: "Tâches cliniques", guidelines: "Guidelines", router: "Model Router", flags: "Feature Flags",
+    plans: "AI Plans", keys: "Clés API", usage: "Usage", costs: "Coûts", logs: "Logs", audit: "Audit",
+    settings: "AI Settings", playground: "Testing Playground"
+  };
+
+  var aiState = { initialized: false, view: "dashboard", loaded: {}, editingEntity: "", editingId: "", detailPromptId: "",
+    specialties: [], tasks: [], guidelines: [], flags: [], plans: [], models: [], keys: [], prompts: [], connectors: [] };
+
+  // Guidelines store multilingual summary as an object ({fr,en,ar}) and
+  // structured excerpts as an array ("sections") - the generic dialog only
+  // knows flat field keys, so these two helpers flatten/rebuild just those
+  // two composite fields for the "guidelines" entity, keeping the rest of
+  // the generic CRUD dialog untouched for every other entity.
+  var AI_SUMMARY_LANG_FIELD = /^summary_(fr|en|ar)$/;
+
+  function aiFieldValue(field, row) {
+    var langMatch = AI_SUMMARY_LANG_FIELD.exec(field.key);
+    if (langMatch && row) return (row.summary && row.summary[langMatch[1]]) || "";
+    if (field.key === "sections_json" && row) return JSON.stringify(row.sections || [], null, 2);
+    if (row && row[field.key] !== undefined) return row[field.key];
+    return field.default !== undefined ? field.default : (field.type === "checkbox" ? false : "");
+  }
+
+  function renderAiGenericFields(entityKey, row) {
+    var cfg = AI_ENTITIES[entityKey];
+    return cfg.fields.map(function (f) {
+      var val = aiFieldValue(f, row);
+      var locked = row && f.lockOnEdit ? " disabled" : "";
+      if (f.type === "checkbox") {
+        return '<label class="check"><input type="checkbox" data-field="' + f.key + '"' + (val ? " checked" : "") + locked + '><span>' + escapeHtml(f.label) + '</span></label>';
+      }
+      if (f.type === "textarea") {
+        return '<label class="full"><span>' + escapeHtml(f.label) + '</span><textarea data-field="' + f.key + '" rows="4">' + escapeHtml(val) + '</textarea></label>';
+      }
+      if (f.type === "select") {
+        var options = f.dynamicOptions === "connectors" ? connectorSelectOptions() : f.options;
+        var opts = options.map(function (o) { return '<option value="' + escapeHtml(o.value) + '"' + (o.value === val ? " selected" : "") + '>' + escapeHtml(o.label) + '</option>'; }).join("");
+        return '<label><span>' + escapeHtml(f.label) + '</span><select data-field="' + f.key + '"' + locked + '>' + opts + '</select></label>';
+      }
+      var type = f.type === "number" ? "number" : (f.type === "password" ? "password" : "text");
+      var step = f.step ? ' step="' + f.step + '"' : "";
+      return '<label><span>' + escapeHtml(f.label) + (f.required ? " *" : "") + '</span><input data-field="' + f.key + '" type="' + type + '" value="' + escapeHtml(type === "password" ? "" : val) + '"' + step + locked + (f.required ? " required" : "") + '></label>';
+    }).join("");
+  }
+
+  async function openAiGenericDialog(entityKey, row) {
+    var cfg = AI_ENTITIES[entityKey];
+    var needsConnectors = cfg.fields.some(function (f) { return f.dynamicOptions === "connectors"; });
+    if (needsConnectors) await loadAiEntity("connectors");
+    aiState.editingEntity = entityKey;
+    aiState.editingId = row ? row[cfg.idField || "id"] : "";
+    el.aiGenericTitle.textContent = (row ? "Modifier — " : "Créer — ") + cfg.label;
+    el.aiGenericFields.innerHTML = renderAiGenericFields(entityKey, row);
+    el.aiGenericDialog.showModal();
+  }
+
+  function collectAiGenericFields(entityKey) {
+    var cfg = AI_ENTITIES[entityKey];
+    var body = {};
+    cfg.fields.forEach(function (f) {
+      var input = el.aiGenericFields.querySelector('[data-field="' + f.key + '"]');
+      if (!input) return;
+      if (f.type === "checkbox") body[f.key] = input.checked;
+      else if (f.type === "number") body[f.key] = input.value === "" ? undefined : Number(input.value);
+      else body[f.key] = input.value;
+    });
+    return body;
+  }
+
+  async function saveAiGeneric(e) {
+    e.preventDefault();
+    var entityKey = aiState.editingEntity;
+    var cfg = AI_ENTITIES[entityKey];
+    var body = collectAiGenericFields(entityKey);
+    if (entityKey === "keys" && !body.api_key) delete body.api_key;
+    if (entityKey === "guidelines") {
+      body.summary = { fr: body.summary_fr || "", en: body.summary_en || "", ar: body.summary_ar || "" };
+      delete body.summary_fr; delete body.summary_en; delete body.summary_ar;
+      if (body.sections_json) {
+        try { body.sections = JSON.parse(body.sections_json); }
+        catch (e2) { showToast("JSON des sections invalide : " + e2.message, true); return; }
+      }
+      delete body.sections_json;
+    }
+    var id = aiState.editingId;
+    var submitBtn = el.aiGenericForm.querySelector('button[type=submit]');
+    var success = await runAction(submitBtn, async function () {
+      if (id) await apiFetch(cfg.base + "/" + encodeURIComponent(id), { method: "PATCH", body: body });
+      else await apiFetch(cfg.base, { method: "POST", body: body });
+    }, "Enregistré");
+    if (success) { el.aiGenericDialog.close(); await loadAiEntity(entityKey, true); await renderAiView(); }
+  }
+
+  async function deleteAiGeneric(entityKey, id, btn) {
+    if (!window.confirm("Supprimer cet élément ?")) return;
+    var cfg = AI_ENTITIES[entityKey];
+    var success = await runAction(btn, async function () {
+      await apiFetch(cfg.base + "/" + encodeURIComponent(id), { method: "DELETE" });
+    }, "Supprimé");
+    if (success) { await loadAiEntity(entityKey, true); await renderAiView(); }
+  }
+
+  async function publishAiGuideline(id, btn) {
+    var success = await runAction(btn, async function () { await apiFetch("/api/admin/ai/guidelines/" + id + "/publish", { method: "POST" }); }, "Guideline publiée");
+    if (success) { await loadAiEntity("guidelines", true); await renderAiView(); }
+  }
+
+  async function newVersionAiGuideline(id, btn) {
+    var success = await runAction(btn, async function () { await apiFetch("/api/admin/ai/guidelines/" + id + "/new-version", { method: "POST" }); }, "Nouvelle version créée (draft)");
+    if (success) { await loadAiEntity("guidelines", true); await renderAiView(); }
+  }
+
+  async function deprecateAiGuideline(id, btn) {
+    if (!window.confirm("Déprécier cette guideline ? Elle ne sera plus injectée dans le trafic réel.")) return;
+    var success = await runAction(btn, async function () { await apiFetch("/api/admin/ai/guidelines/" + id + "/deprecate", { method: "POST" }); }, "Guideline dépréciée");
+    if (success) { await loadAiEntity("guidelines", true); await renderAiView(); }
+  }
+
+  async function loadAiEntity(entityKey, force) {
+    if (aiState.loaded[entityKey] && !force) return aiState[entityKey];
+    var cfg = AI_ENTITIES[entityKey];
+    var data = await apiFetch(cfg.base);
+    aiState[entityKey] = data.rows || [];
+    aiState.loaded[entityKey] = true;
+    return aiState[entityKey];
+  }
+
+  async function loadAiPrompts(force) {
+    if (aiState.loaded.prompts && !force) return aiState.prompts;
+    var data = await apiFetch("/api/admin/ai/prompts");
+    aiState.prompts = data.rows || [];
+    aiState.loaded.prompts = true;
+    return aiState.prompts;
+  }
+
+  function renderAiGenericTable(entityKey) {
+    var cfg = AI_ENTITIES[entityKey];
+    var rows = aiState[entityKey] || [];
+    var idKey = cfg.idField || "id";
+    var head = cfg.columns.map(function (c) { return "<th>" + escapeHtml(c) + "</th>"; }).join("") + "<th></th>";
+    var body = rows.map(function (r) {
+      var cells = cfg.columns.map(function (c) {
+        var v = r[c];
+        if (typeof v === "boolean") return "<td>" + (v ? badge("green", "oui") : badge("red", "non")) + "</td>";
+        if (Array.isArray(v)) return "<td>" + escapeHtml(v.join(", ")) + "</td>";
+        return "<td>" + escapeHtml(v == null ? "" : v) + "</td>";
+      }).join("");
+      var guidelineActions = entityKey === "guidelines"
+        ? '<button class="btn ghost" type="button" data-guideline-publish="' + escapeHtml(r.id) + '">Publier</button>' +
+          '<button class="btn ghost" type="button" data-guideline-version="' + escapeHtml(r.id) + '">Nouvelle version</button>' +
+          '<button class="btn ghost" type="button" data-guideline-deprecate="' + escapeHtml(r.id) + '">Déprécier</button>'
+        : "";
+      return '<tr>' + cells + '<td class="row-actions">' +
+        '<button class="btn ghost" type="button" data-ai-edit="' + entityKey + '" data-id="' + escapeHtml(r[idKey]) + '">Modifier</button>' +
+        guidelineActions +
+        '<button class="btn danger" type="button" data-ai-delete="' + entityKey + '" data-id="' + escapeHtml(r[idKey]) + '">Supprimer</button></td></tr>';
+    }).join("");
+    return '<div class="toolbar toolbar--actions"><button class="btn primary" type="button" data-ai-new="' + entityKey + '">+ ' + escapeHtml(cfg.label) + '</button></div>' +
+      '<section class="panel"><div class="table-wrap"><table class="data-table"><thead><tr>' + head + '</tr></thead><tbody>' +
+      (body || '<tr><td colspan="' + (cfg.columns.length + 1) + '"><div class="empty">Aucun élément.</div></td></tr>') +
+      '</tbody></table></div></section>';
+  }
+
+  function renderAiSubNav() {
+    el.aiSubNav.innerHTML = AI_SUBVIEWS.map(function (v) {
+      return '<button type="button" class="subnav-item' + (aiState.view === v ? " active" : "") + '" data-aiview="' + v + '">' + escapeHtml(AI_SUBVIEW_LABELS[v]) + '</button>';
+    }).join("");
+  }
+
+  async function setAiView(view) {
+    aiState.view = view;
+    renderAiSubNav();
+    el.aiContent.innerHTML = '<div class="empty">Chargement…</div>';
+    try { await renderAiView(); }
+    catch (e) { el.aiContent.innerHTML = '<div class="empty">' + escapeHtml(e.message || "Erreur") + '</div>'; }
+  }
+
+  async function renderAiView() {
+    var view = aiState.view;
+    if (AI_ENTITIES[view]) {
+      await loadAiEntity(view);
+      el.aiContent.innerHTML = renderAiGenericTable(view);
+      return;
+    }
+    if (view === "dashboard") return renderAiDashboard();
+    if (view === "prompts") return renderAiPrompts();
+    if (view === "router") return renderAiRouter();
+    if (view === "usage") return renderAiUsage();
+    if (view === "costs") return renderAiCosts();
+    if (view === "logs") return renderAiLogs();
+    if (view === "audit") return renderAiAudit();
+    if (view === "settings") return renderAiSettingsView();
+    if (view === "playground") return renderAiPlayground();
+  }
+
+  async function renderAiDashboard() {
+    var models = await loadAiEntity("models");
+    var plans = await loadAiEntity("plans");
+    var prompts = await loadAiPrompts();
+    el.aiContent.innerHTML = '<section class="stat-grid">' +
+      statCard("Modèles activés", models.filter(function (m) { return m.enabled; }).length, "accent-blue") +
+      statCard("Prompts", prompts.length, "accent-violet") +
+      statCard("Plans IA", plans.length, "accent-green") +
+      '</section><section class="panel panel--hint"><h3>Gestion IA</h3><p>Configurez modèles, prompt library, router clinique et supervision (usage, coûts, logs, audit) depuis cette section — distincte de « IA & Médecins » qui gère les comptes/clés existants.</p></section>';
+  }
+
+  var AI_PROMPT_STATUS_BADGE = { draft: "amber", testing: "blue", published: "green", archived: "red" };
+
+  // Canned Prompt Testing fixtures (Sample Patient/ECG/Laboratory/MRI/CT/
+  // X-Ray) - just convenience presets that fill the variables textarea, not
+  // new backend behavior; the actual clinical prompts/content are added
+  // later per instruction.
+  var AI_PROMPT_SAMPLES = {
+    "Sample Patient": { patient_age: "54", patient_gender: "M", chief_complaint: "Douleur thoracique", medical_history: "Hypertension, diabète type 2", current_medications: "Metformine, Amlodipine", allergies: "Aucune connue", vital_signs: "TA 145/92, FC 88, T 37.1°C", clinical_notes: "Douleur depuis 2h, irradiant au bras gauche" },
+    "Sample ECG": { ecg: "Rythme sinusal 78 bpm, PR 180ms, QRS 90ms, QTc 420ms, pas de sus-décalage ST" },
+    "Sample Laboratory": { laboratory_results: "Troponine 0.02 ng/mL, CRP 5 mg/L, Créatinine 0.9 mg/dL, HbA1c 7.2%" },
+    "Sample MRI": { mri: "IRM cérébrale: pas de lésion ischémique aiguë, discrets hypersignaux de la substance blanche" },
+    "Sample CT": { ct: "TDM thoracique: pas d'embolie pulmonaire, pas de foyer de condensation" },
+    "Sample X-Ray": { xray: "Radiographie thoracique: silhouette cardiaque normale, champs pulmonaires clairs" }
+  };
+
+  async function renderAiPrompts() {
+    var rows = await loadAiPrompts();
+    var specialties = await loadAiEntity("specialties");
+    var tasks = await loadAiEntity("tasks");
+    var specMap = {}; specialties.forEach(function (s) { specMap[s.id] = s.name; });
+    var taskMap = {}; tasks.forEach(function (t) { taskMap[t.id] = t.name; });
+    var body = rows.map(function (p) {
+      return '<tr><td>' + escapeHtml(p.name) + '<div class="cell-sub">' + escapeHtml(p.description || "") + '</div></td>' +
+        '<td>' + escapeHtml(specMap[p.specialty_id] || "-") + '</td><td>' + escapeHtml(taskMap[p.task_id] || "-") + '</td>' +
+        '<td>' + badge(AI_PROMPT_STATUS_BADGE[p.status] || "amber", p.status) + '</td>' +
+        '<td>v' + escapeHtml(p.current_version || 0) + '</td>' +
+        '<td class="row-actions">' +
+        '<button class="btn ghost" type="button" data-prompt-detail="' + p.id + '">Détails</button>' +
+        '<button class="btn ghost" type="button" data-prompt-clone="' + p.id + '">Cloner</button>' +
+        '<button class="btn danger" type="button" data-prompt-delete="' + p.id + '">Supprimer</button></td></tr>';
+    }).join("");
+    el.aiContent.innerHTML =
+      '<div class="toolbar toolbar--actions">' +
+        '<button class="btn primary" type="button" id="aiNewPromptBtn">+ Prompt</button>' +
+        '<button class="btn ghost" type="button" data-prompt-export="json">Exporter JSON</button>' +
+        '<button class="btn ghost" type="button" data-prompt-export="yaml">Exporter YAML</button>' +
+        '<button class="btn ghost" type="button" data-prompt-export="markdown">Exporter Markdown</button>' +
+        '<button class="btn ghost" type="button" id="aiImportPromptsBtn">Importer JSON</button>' +
+      '</div>' +
+      '<section class="panel"><div class="table-wrap"><table class="data-table"><thead><tr><th>Nom</th><th>Spécialité</th><th>Tâche</th><th>Statut</th><th>Version</th><th></th></tr></thead><tbody>' +
+      (body || '<tr><td colspan="6"><div class="empty">Aucun prompt.</div></td></tr>') + '</tbody></table></div></section>' +
+      '<section class="panel hidden" id="aiPromptDetailPanel"></section>';
+  }
+
+  async function showAiPromptDetail(id) {
+    var data = await apiFetch("/api/admin/ai/prompts/" + id);
+    var p = data.row, versions = data.versions || [];
+    var specialties = aiState.specialties || [];
+    var tasks = aiState.tasks || [];
+    var models = await loadAiEntity("models");
+    var guidelines = await loadAiEntity("guidelines");
+    var specOptions = specialties.map(function (s) { return '<option value="' + escapeHtml(s.id) + '"' + (s.id === p.specialty_id ? " selected" : "") + '>' + escapeHtml(s.name) + '</option>'; }).join("");
+    var taskOptions = tasks.map(function (t) { return '<option value="' + escapeHtml(t.id) + '"' + (t.id === p.task_id ? " selected" : "") + '>' + escapeHtml(t.name) + '</option>'; }).join("");
+    var modelOptionsFor = function (sel) {
+      return '<option value="">—</option>' + models.map(function (m) { return '<option value="' + escapeHtml(m.id) + '"' + (m.id === sel ? " selected" : "") + '>' + escapeHtml(m.name) + '</option>'; }).join("");
+    };
+    var statusOptions = ["draft", "testing", "published", "archived"].map(function (s) { return '<option value="' + s + '"' + (s === p.status ? " selected" : "") + '>' + s + '</option>'; }).join("");
+    var versionRows = versions.map(function (v) {
+      return '<tr><td><label class="check"><input type="radio" name="aiCompareA" value="' + v.version + '"' + (v.version === versions[1] ? " checked" : "") + '"> v' + v.version + '</label></td>' +
+        '<td><label class="check"><input type="radio" name="aiCompareB" value="' + v.version + '"' + (v.version === versions[0] ? " checked" : "") + '"></label></td>' +
+        '<td>' + escapeHtml((v.created_by || "") + " · " + (v.created_at || "").slice(0, 16).replace("T", " ")) + '</td>' +
+        '<td class="row-actions"><button class="btn ghost" type="button" data-prompt-rollback="' + p.id + '" data-version="' + v.version + '">Rollback</button></td></tr>';
+    }).join("");
+    var latest = versions[0] || {};
+    var sampleButtons = Object.keys(AI_PROMPT_SAMPLES).map(function (label) {
+      return '<button class="btn ghost" type="button" data-prompt-sample="' + escapeHtml(label) + '">' + escapeHtml(label) + '</button>';
+    }).join(" ");
+    var panel = byId("aiPromptDetailPanel");
+    panel.classList.remove("hidden");
+    panel.innerHTML =
+      '<h3>' + escapeHtml(p.name) + " " + badge(AI_PROMPT_STATUS_BADGE[p.status] || "amber", p.status) + '</h3>' +
+      '<div class="form-grid">' +
+        '<label><span>Nom</span><input id="aiPromptName" value="' + escapeHtml(p.name) + '"></label>' +
+        '<label><span>Spécialité (catégorie)</span><select id="aiPromptSpecialty"><option value="">—</option>' + specOptions + '</select></label>' +
+        '<label><span>Tâche clinique</span><select id="aiPromptTask"><option value="">—</option>' + taskOptions + '</select></label>' +
+        '<label><span>Description</span><input id="aiPromptDescription" value="' + escapeHtml(p.description || "") + '"></label>' +
+        '<label><span>Langue</span><input id="aiPromptLanguage" value="' + escapeHtml(p.language || "fr") + '"></label>' +
+        '<label><span>Seuil de confiance (0-1)</span><input id="aiPromptConfidence" type="number" step="0.05" min="0" max="1" value="' + escapeHtml(p.confidence_threshold) + '"></label>' +
+        '<label><span>Statut</span><select id="aiPromptStatus">' + statusOptions + '</select></label>' +
+      '</div>' +
+      '<h4>Modèles recommandés</h4>' +
+      '<div class="form-grid">' +
+        '<label><span>Préféré</span><select id="aiPromptPreferredModel">' + modelOptionsFor(p.preferred_model_id) + '</select></label>' +
+        '<label><span>Fallback</span><select id="aiPromptFallbackModel">' + modelOptionsFor(p.fallback_model_id) + '</select></label>' +
+        '<label><span>Second fallback</span><select id="aiPromptSecondFallbackModel">' + modelOptionsFor(p.second_fallback_model_id) + '</select></label>' +
+      '</div>' +
+      '<h4>Guidelines liées</h4>' +
+      '<div class="checks">' + guidelines.map(function (g) {
+        var checked = (p.guideline_ids || []).indexOf(g.id) !== -1 ? " checked" : "";
+        return '<label class="check"><input type="checkbox" class="ai-prompt-guideline" value="' + escapeHtml(g.id) + '"' + checked + '><span>' + escapeHtml(g.org) + '</span></label>';
+      }).join("") + '</div>' +
+      '<div class="form-grid">' +
+        '<label class="full"><span>Variables déclarées (séparées par virgule)</span><input id="aiPromptVariables" value="' + escapeHtml((p.variables || []).join(", ")) + '"></label>' +
+        '<label class="full"><span>Expected JSON (exemple de sortie)</span><textarea id="aiPromptExpectedJson" rows="3">' + escapeHtml(p.expected_json || "") + '</textarea></label>' +
+      '</div>' +
+      '<div class="toolbar toolbar--actions">' +
+        '<button class="btn ghost" type="button" id="aiPromptSaveMeta">Enregistrer métadonnées</button>' +
+        '<button class="btn primary" type="button" data-prompt-publish="' + p.id + '">Publier</button>' +
+        '<button class="btn danger" type="button" data-prompt-archive="' + p.id + '">Archiver</button>' +
+      '</div>' +
+      '<h4>Historique des versions</h4>' +
+      '<div class="table-wrap"><table class="data-table"><thead><tr><th>A</th><th>B</th><th>Créée par</th><th></th></tr></thead><tbody>' + (versionRows || '<tr><td colspan="4"><div class="empty">Aucune version.</div></td></tr>') + '</tbody></table></div>' +
+      '<button class="btn ghost" type="button" data-prompt-compare="' + p.id + '">Comparer A / B</button>' +
+      '<pre id="aiPromptCompareOutput" class="code-block hidden"></pre>' +
+      '<h4>Nouvelle version (courante : v' + (p.current_version || 0) + ')</h4>' +
+      '<div class="form-grid">' +
+        '<label class="full"><span>System prompt</span><textarea id="aiPromptSystem" rows="3">' + escapeHtml(latest.system_prompt || "") + '</textarea></label>' +
+        '<label class="full"><span>Developer prompt</span><textarea id="aiPromptDeveloper" rows="2">' + escapeHtml(latest.developer_prompt || "") + '</textarea></label>' +
+        '<label class="full"><span>User template ({{variable}} supporté)</span><textarea id="aiPromptUserTemplate" rows="3">' + escapeHtml(latest.user_template || "") + '</textarea></label>' +
+        '<label class="full"><span>Output schema (JSON, optionnel)</span><textarea id="aiPromptOutputSchema" rows="2">' + escapeHtml(latest.output_schema || "") + '</textarea></label>' +
+      '</div>' +
+      '<button class="btn primary" type="button" id="aiPromptSaveVersion">Enregistrer nouvelle version</button>' +
+      '<h4>Prompt Testing</h4>' +
+      '<p class="subtle">Échantillons : ' + sampleButtons + '</p>' +
+      '<textarea id="aiPromptTestVars" rows="3" placeholder="{&quot;patient_age&quot;:&quot;54&quot;,...}"></textarea>' +
+      '<div class="toolbar toolbar--actions">' +
+        '<button class="btn ghost" type="button" id="aiPromptTestBtn">Tester le rendu (sans appel IA)</button>' +
+        '<button class="btn primary" type="button" id="aiPromptRunAiTestBtn">Exécuter avec IA (latence/coût/confiance)</button>' +
+      '</div>' +
+      '<pre id="aiPromptTestOutput" class="code-block"></pre>' +
+      '<h4>Analytics</h4>' +
+      '<div id="aiPromptAnalytics" class="stat-grid"></div>' +
+      '<h4>Doctor Feedback</h4>' +
+      '<div id="aiPromptFeedback" class="table-wrap"></div>';
+    aiState.detailPromptId = p.id;
+    loadAiPromptAnalytics(p.id);
+    loadAiPromptFeedback(p.id);
+  }
+
+  async function loadAiPromptAnalytics(id) {
+    try {
+      var data = await apiFetch("/api/admin/ai/prompts/" + id + "/analytics");
+      var a = data.analytics || {};
+      byId("aiPromptAnalytics").innerHTML =
+        statCard("Requêtes", a.requests || 0, "accent-blue") +
+        statCard("Taux de succès", a.success_rate != null ? Math.round(a.success_rate * 100) + "%" : "-", "accent-green") +
+        statCard("Confiance moy.", a.avg_confidence != null ? Math.round(a.avg_confidence * 100) + "%" : "-", "accent-violet") +
+        statCard("Latence moy.", (a.avg_latency_ms || 0) + " ms", "accent-amber") +
+        statCard("Coût (30j)", "$" + ((a.cost_micros || 0) / 1e6).toFixed(4), "");
+    } catch (e) { /* analytics best-effort, non-blocking */ }
+  }
+
+  async function loadAiPromptFeedback(id) {
+    try {
+      var data = await apiFetch("/api/admin/ai/prompts/" + id + "/feedback");
+      var rows = (data.rows || []).map(function (f) {
+        return '<tr><td>' + escapeHtml((f.at || "").slice(0, 16).replace("T", " ")) + '</td><td>' + escapeHtml(f.rating || "-") + '/5</td><td>' + escapeHtml(f.comment || "") + '</td></tr>';
+      }).join("");
+      byId("aiPromptFeedback").innerHTML = '<table class="data-table"><thead><tr><th>Date</th><th>Note</th><th>Commentaire</th></tr></thead><tbody>' +
+        (rows || '<tr><td colspan="3"><div class="empty">Aucun retour médecin pour le moment.</div></td></tr>') + '</tbody></table>';
+    } catch (e) { /* best-effort */ }
+  }
+
+  async function createAiPrompt() {
+    var name = window.prompt("Nom du nouveau prompt :");
+    if (!name) return;
+    try {
+      await apiFetch("/api/admin/ai/prompts", { method: "POST", body: { name: name } });
+      showToast("Prompt créé");
+      await loadAiPrompts(true);
+      await renderAiPrompts();
+    } catch (e) { showToast(e.message, true); }
+  }
+
+  async function exportAiPrompts(format) {
+    try {
+      if (format === "json") {
+        var data = await apiFetch("/api/admin/ai/prompts/export");
+        downloadText(JSON.stringify(data.export, null, 2), "medismart-ai-prompts.json", "application/json");
+        return;
+      }
+      var res = await fetch("/api/admin/ai/prompts/export?format=" + format, { headers: authHeader() });
+      var text = await res.text();
+      downloadText(text, "medismart-ai-prompts." + (format === "markdown" ? "md" : format), "text/plain");
+    } catch (e) { showToast(e.message, true); }
+  }
+
+  function downloadText(text, filename, mime) {
+    var blob = new Blob([text], { type: mime });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url; a.download = filename; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  async function importAiPrompts() {
+    var raw = window.prompt("Collez le JSON exporté :");
+    if (!raw) return;
+    try {
+      var parsed = JSON.parse(raw);
+      await apiFetch("/api/admin/ai/prompts/import", { method: "POST", body: { export: parsed } });
+      showToast("Import terminé");
+      await loadAiPrompts(true);
+      await renderAiPrompts();
+    } catch (e) { showToast(e.message, true); }
+  }
+
+  async function cloneAiPrompt(id, btn) {
+    var success = await runAction(btn, async function () { await apiFetch("/api/admin/ai/prompts/" + id + "/clone", { method: "POST" }); }, "Prompt cloné");
+    if (success) { await loadAiPrompts(true); await renderAiPrompts(); }
+  }
+
+  async function deleteAiPrompt(id, btn) {
+    if (!window.confirm("Supprimer ce prompt et tout son historique ?")) return;
+    var success = await runAction(btn, async function () { await apiFetch("/api/admin/ai/prompts/" + id, { method: "DELETE" }); }, "Supprimé");
+    if (success) { await loadAiPrompts(true); await renderAiPrompts(); }
+  }
+
+  async function rollbackAiPrompt(id, version, btn) {
+    await runAction(btn, async function () { await apiFetch("/api/admin/ai/prompts/" + id + "/rollback", { method: "POST", body: { version: Number(version) } }); }, "Rollback effectué");
+    await showAiPromptDetail(id);
+  }
+
+  async function publishAiPrompt(id, btn) {
+    var success = await runAction(btn, async function () { await apiFetch("/api/admin/ai/prompts/" + id + "/publish", { method: "POST" }); }, "Prompt publié");
+    if (success) { await loadAiPrompts(true); await showAiPromptDetail(id); }
+  }
+
+  async function archiveAiPrompt(id, btn) {
+    if (!window.confirm("Archiver ce prompt ? Il ne sera plus utilisé pour le trafic réel.")) return;
+    var success = await runAction(btn, async function () { await apiFetch("/api/admin/ai/prompts/" + id + "/archive", { method: "POST" }); }, "Prompt archivé");
+    if (success) { await loadAiPrompts(true); await showAiPromptDetail(id); }
+  }
+
+  async function compareAiPromptVersions(id) {
+    var a = byId("aiPromptDetailPanel").querySelector('input[name="aiCompareA"]:checked');
+    var b = byId("aiPromptDetailPanel").querySelector('input[name="aiCompareB"]:checked');
+    if (!a || !b) { showToast("Sélectionnez deux versions (A et B)", true); return; }
+    try {
+      var data = await apiFetch("/api/admin/ai/prompts/" + id + "/compare?a=" + a.value + "&b=" + b.value);
+      var out = byId("aiPromptCompareOutput");
+      out.classList.remove("hidden");
+      out.textContent = JSON.stringify(data.diff, null, 2);
+    } catch (e) { showToast(e.message, true); }
+  }
+
+  async function saveAiPromptMeta() {
+    var id = aiState.detailPromptId;
+    var guidelineIds = Array.prototype.map.call(byId("aiPromptDetailPanel").querySelectorAll(".ai-prompt-guideline:checked"), function (el2) { return el2.value; });
+    var body = {
+      name: byId("aiPromptName").value,
+      description: byId("aiPromptDescription").value,
+      specialty_id: byId("aiPromptSpecialty").value,
+      task_id: byId("aiPromptTask").value,
+      language: byId("aiPromptLanguage").value,
+      confidence_threshold: Number(byId("aiPromptConfidence").value),
+      status: byId("aiPromptStatus").value,
+      preferred_model_id: byId("aiPromptPreferredModel").value,
+      fallback_model_id: byId("aiPromptFallbackModel").value,
+      second_fallback_model_id: byId("aiPromptSecondFallbackModel").value,
+      guideline_ids: guidelineIds,
+      variables: byId("aiPromptVariables").value.split(",").map(function (s) { return s.trim(); }).filter(Boolean),
+      expected_json: byId("aiPromptExpectedJson").value
+    };
+    try { await apiFetch("/api/admin/ai/prompts/" + id, { method: "PATCH", body: body }); showToast("Métadonnées enregistrées"); await loadAiPrompts(true); }
+    catch (e) { showToast(e.message, true); }
+  }
+
+  async function saveAiPromptVersion() {
+    var id = aiState.detailPromptId;
+    var body = {
+      system_prompt: byId("aiPromptSystem").value,
+      developer_prompt: byId("aiPromptDeveloper").value,
+      user_template: byId("aiPromptUserTemplate").value,
+      output_schema: byId("aiPromptOutputSchema").value
+    };
+    try {
+      await apiFetch("/api/admin/ai/prompts/" + id + "/versions", { method: "POST", body: body });
+      showToast("Nouvelle version enregistrée (statut : testing)");
+      await loadAiPrompts(true);
+      await showAiPromptDetail(id);
+    } catch (e) { showToast(e.message, true); }
+  }
+
+  function fillAiPromptSample(label) {
+    var sample = AI_PROMPT_SAMPLES[label];
+    if (!sample) return;
+    byId("aiPromptTestVars").value = JSON.stringify(sample, null, 2);
+  }
+
+  function readAiPromptTestVars() {
+    var raw = byId("aiPromptTestVars").value.trim();
+    if (!raw) return {};
+    return JSON.parse(raw);
+  }
+
+  async function testAiPrompt() {
+    var id = aiState.detailPromptId;
+    var vars;
+    try { vars = readAiPromptTestVars(); } catch (e) { showToast("Variables JSON invalides", true); return; }
+    try {
+      var data = await apiFetch("/api/admin/ai/prompts/" + id + "/test", { method: "POST", body: { variables: vars } });
+      byId("aiPromptTestOutput").textContent = JSON.stringify(data, null, 2);
+    } catch (e) { showToast(e.message, true); }
+  }
+
+  async function runAiPromptTest(btn) {
+    var id = aiState.detailPromptId;
+    var vars;
+    try { vars = readAiPromptTestVars(); } catch (e) { showToast("Variables JSON invalides", true); return; }
+    try {
+      var data = await runBusy(btn, function () {
+        return apiFetch("/api/admin/ai/prompts/" + id + "/test", { method: "POST", body: { run_ai: true, variables: vars, message: vars.chief_complaint || vars.clinical_notes || "Test" } });
+      });
+      byId("aiPromptTestOutput").textContent = JSON.stringify(data, null, 2);
+    } catch (e) {
+      byId("aiPromptTestOutput").textContent = "Erreur: " + e.message;
+    }
+  }
+
+  async function renderAiRouter() {
+    var tasks = await loadAiEntity("tasks");
+    var models = await loadAiEntity("models");
+    var prompts = await loadAiPrompts();
+    var data = await apiFetch("/api/admin/ai/router");
+    var rules = {};
+    (data.rows || []).forEach(function (r) { rules[r.task_id] = r; });
+    var modelOptions = function (sel) { return models.map(function (m) { return '<option value="' + escapeHtml(m.id) + '"' + (m.id === sel ? " selected" : "") + '>' + escapeHtml(m.name) + '</option>'; }).join(""); };
+    var promptOptions = function (sel) { return prompts.map(function (p) { return '<option value="' + escapeHtml(p.id) + '"' + (p.id === sel ? " selected" : "") + '>' + escapeHtml(p.name) + '</option>'; }).join(""); };
+    var rows = tasks.map(function (t) {
+      var r = rules[t.id] || {};
+      return '<tr data-task="' + escapeHtml(t.id) + '">' +
+        '<td>' + escapeHtml(t.name) + '</td>' +
+        '<td><select class="ai-router-model"><option value="">—</option>' + modelOptions(r.primary_model_id) + '</select></td>' +
+        '<td><select class="ai-router-prompt"><option value="">—</option>' + promptOptions(r.prompt_id) + '</select></td>' +
+        '<td><input class="ai-router-temp" type="number" step="0.1" placeholder="défaut" value="' + (r.temperature_override == null ? "" : escapeHtml(r.temperature_override)) + '"></td>' +
+        '<td><input class="ai-router-fallback" type="text" placeholder="ids séparés par virgule" value="' + escapeHtml((r.fallback_model_ids || []).join(",")) + '"></td>' +
+        '<td><button class="btn primary" type="button" data-ai-router-save="' + escapeHtml(t.id) + '">Enregistrer</button></td></tr>';
+    }).join("");
+    el.aiContent.innerHTML = '<section class="panel"><div class="table-wrap"><table class="data-table"><thead><tr><th>Tâche clinique</th><th>Modèle principal</th><th>Version de prompt</th><th>Température</th><th>Fallback (IDs)</th><th></th></tr></thead><tbody>' +
+      (rows || '<tr><td colspan="6"><div class="empty">Aucune tâche clinique.</div></td></tr>') + '</tbody></table></div></section>';
+  }
+
+  async function saveAiRouterRow(taskId, btn) {
+    var tr = btn.closest("tr");
+    var body = {
+      primary_model_id: tr.querySelector(".ai-router-model").value,
+      prompt_id: tr.querySelector(".ai-router-prompt").value,
+      temperature_override: tr.querySelector(".ai-router-temp").value === "" ? null : Number(tr.querySelector(".ai-router-temp").value),
+      fallback_model_ids: tr.querySelector(".ai-router-fallback").value.split(",").map(function (s) { return s.trim(); }).filter(Boolean)
+    };
+    await runAction(btn, async function () { await apiFetch("/api/admin/ai/router/" + taskId, { method: "PUT", body: body }); }, "Règle enregistrée");
+  }
+
+  async function renderAiUsage() {
+    var data = await apiFetch("/api/admin/ai/usage");
+    var rows = (data.by_model || []).map(function (r) {
+      return '<tr><td>' + escapeHtml(r.name) + '</td><td>' + escapeHtml(r.requests || 0) + '</td><td>' + escapeHtml(r.tokens_in || 0) + '</td><td>' + escapeHtml(r.tokens_out || 0) + '</td><td>' + escapeHtml(r.errors || 0) + '</td></tr>';
+    }).join("");
+    el.aiContent.innerHTML = '<section class="panel"><h3>Usage (30 derniers jours)</h3><div class="table-wrap"><table class="data-table"><thead><tr><th>Modèle</th><th>Requêtes</th><th>Tokens in</th><th>Tokens out</th><th>Erreurs</th></tr></thead><tbody>' +
+      (rows || '<tr><td colspan="5"><div class="empty">Aucune donnée.</div></td></tr>') + '</tbody></table></div></section>';
+  }
+
+  async function renderAiCosts() {
+    var data = await apiFetch("/api/admin/ai/costs");
+    var rows = (data.rows || []).map(function (r) {
+      return '<tr><td>' + escapeHtml(r.name) + '</td><td>' + escapeHtml(r.requests || 0) + '</td><td>$' + escapeHtml((r.cost_usd || 0).toFixed(4)) + '</td></tr>';
+    }).join("");
+    el.aiContent.innerHTML = '<section class="stat-grid">' + statCard("Coût total (30j)", "$" + (data.total_cost_usd || 0).toFixed(2), "accent-violet") +
+      '</section><section class="panel"><div class="table-wrap"><table class="data-table"><thead><tr><th>Modèle</th><th>Requêtes</th><th>Coût</th></tr></thead><tbody>' +
+      (rows || '<tr><td colspan="3"><div class="empty">Aucune donnée.</div></td></tr>') + '</tbody></table></div></section>';
+  }
+
+  async function renderAiLogs() {
+    var data = await apiFetch("/api/admin/ai/logs");
+    var rows = (data.rows || []).map(function (l) {
+      return '<tr><td>' + escapeHtml((l.at || "").replace("T", " ").slice(0, 19)) + '</td><td>' + escapeHtml(l.action_type || "") + '</td><td>' + escapeHtml(l.details || "") + '</td><td>' + (l.success ? badge("green", "OK") : badge("red", "Erreur")) + '</td></tr>';
+    }).join("");
+    el.aiContent.innerHTML = '<section class="panel"><h3>Logs IA (7 derniers jours)</h3><div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Action</th><th>Détails</th><th>Statut</th></tr></thead><tbody>' +
+      (rows || '<tr><td colspan="4"><div class="empty">Aucun log.</div></td></tr>') + '</tbody></table></div></section>';
+  }
+
+  async function renderAiAudit() {
+    var data = await apiFetch("/api/admin/ai/audit");
+    var rows = (data.rows || []).map(function (a) {
+      return '<tr><td>' + escapeHtml((a.at || "").replace("T", " ").slice(0, 19)) + '</td><td>' + escapeHtml(a.admin_username || "") + '</td><td>' + escapeHtml(a.action || "") + '</td><td>' + escapeHtml(a.entity_type || "") + '</td><td>' + escapeHtml(a.details || "") + '</td></tr>';
+    }).join("");
+    el.aiContent.innerHTML = '<section class="panel"><h3>Journal d’audit IA</h3><div class="table-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Admin</th><th>Action</th><th>Entité</th><th>Détails</th></tr></thead><tbody>' +
+      (rows || '<tr><td colspan="5"><div class="empty">Aucune entrée.</div></td></tr>') + '</tbody></table></div></section>';
+  }
+
+  async function renderAiSettingsView() {
+    var data = await apiFetch("/api/admin/ai/settings");
+    var s = data.settings || {};
+    el.aiContent.innerHTML = '<section class="panel"><div class="form-grid">' +
+      '<label class="full"><span>Note de sécurité (affichée au médecin)</span><textarea id="aiSettingSafetyNote" rows="2">' + escapeHtml(s.safety_note || "") + '</textarea></label>' +
+      '<label><span>Timeout par défaut (ms)</span><input id="aiSettingTimeout" type="number" value="' + escapeHtml(s.default_timeout_ms || 60000) + '"></label>' +
+      '<label><span>Retry par défaut</span><input id="aiSettingRetry" type="number" value="' + escapeHtml(s.default_retry || 1) + '"></label>' +
+      '</div><label class="check"><input type="checkbox" id="aiSettingPlayground"' + (s.playground_enabled ? " checked" : "") + '><span>Testing Playground activé</span></label>' +
+      '<button class="btn primary" type="button" id="aiSettingsSaveBtn">Enregistrer</button></section>';
+  }
+
+  async function saveAiSettingsForm(btn) {
+    var body = {
+      safety_note: byId("aiSettingSafetyNote").value,
+      default_timeout_ms: Number(byId("aiSettingTimeout").value),
+      default_retry: Number(byId("aiSettingRetry").value),
+      playground_enabled: byId("aiSettingPlayground").checked
+    };
+    await runAction(btn, async function () { await apiFetch("/api/admin/ai/settings", { method: "PATCH", body: body }); }, "Réglages enregistrés");
+  }
+
+  async function renderAiPlayground() {
+    var tasks = await loadAiEntity("tasks");
+    var taskOptions = tasks.map(function (t) { return '<option value="' + escapeHtml(t.id) + '">' + escapeHtml(t.name) + '</option>'; }).join("");
+    var actionTypes = ["chat", "ecg_analysis", "lab_analysis", "pdf_analysis", "image_analysis", "irm_analysis", "multimodal_analysis", "prescription", "medication_safety"];
+    el.aiContent.innerHTML = '<section class="panel"><div class="form-grid">' +
+      '<label><span>Tâche clinique</span><select id="aiPgTask"><option value="">—</option>' + taskOptions + '</select></label>' +
+      '<label><span>Action type</span><select id="aiPgAction">' + actionTypes.map(function (a) { return '<option value="' + a + '">' + a + '</option>'; }).join("") + '</select></label>' +
+      '</div>' +
+      '<label class="full"><span>Message</span><textarea id="aiPgMessage" rows="4" placeholder="Texte à analyser…"></textarea></label>' +
+      '<button class="btn primary" type="button" id="aiPgRunBtn">Exécuter</button>' +
+      '<h4>Résultat</h4><pre id="aiPgOutput" class="code-block"></pre></section>';
+  }
+
+  async function runAiPlayground(btn) {
+    var body = {
+      task_id: byId("aiPgTask").value,
+      action_type: byId("aiPgAction").value,
+      message: byId("aiPgMessage").value
+    };
+    try {
+      var data = await runBusy(btn, function () { return apiFetch("/api/admin/ai/playground", { method: "POST", body: body }); });
+      byId("aiPgOutput").textContent = JSON.stringify(data, null, 2);
+    } catch (e) {
+      byId("aiPgOutput").textContent = "Erreur: " + e.message;
+    }
+  }
+
+  function bindAiManagementEvents() {
+    el.aiSubNav.addEventListener("click", function (e) {
+      var btn = e.target.closest("button[data-aiview]");
+      if (btn) setAiView(btn.dataset.aiview);
+    });
+    el.aiGenericForm.addEventListener("submit", saveAiGeneric);
+    el.aiContent.addEventListener("click", function (e) {
+      var btn = e.target.closest("button");
+      if (!btn || btn.__busy) return;
+      if (btn.dataset.aiNew) { openAiGenericDialog(btn.dataset.aiNew, null); return; }
+      if (btn.dataset.aiEdit) {
+        var entity = btn.dataset.aiEdit;
+        var idKey = AI_ENTITIES[entity].idField || "id";
+        var row = (aiState[entity] || []).find(function (r) { return String(r[idKey]) === btn.dataset.id; });
+        openAiGenericDialog(entity, row);
+        return;
+      }
+      if (btn.dataset.aiDelete) { deleteAiGeneric(btn.dataset.aiDelete, btn.dataset.id, btn); return; }
+      if (btn.dataset.guidelinePublish) { publishAiGuideline(btn.dataset.guidelinePublish, btn); return; }
+      if (btn.dataset.guidelineVersion) { newVersionAiGuideline(btn.dataset.guidelineVersion, btn); return; }
+      if (btn.dataset.guidelineDeprecate) { deprecateAiGuideline(btn.dataset.guidelineDeprecate, btn); return; }
+      if (btn.id === "aiNewPromptBtn") { createAiPrompt(); return; }
+      if (btn.dataset.promptExport) { exportAiPrompts(btn.dataset.promptExport); return; }
+      if (btn.id === "aiImportPromptsBtn") { importAiPrompts(); return; }
+      if (btn.dataset.promptDetail) { showAiPromptDetail(btn.dataset.promptDetail); return; }
+      if (btn.dataset.promptClone) { cloneAiPrompt(btn.dataset.promptClone, btn); return; }
+      if (btn.dataset.promptDelete) { deleteAiPrompt(btn.dataset.promptDelete, btn); return; }
+      if (btn.dataset.promptRollback) { rollbackAiPrompt(btn.dataset.promptRollback, btn.dataset.version, btn); return; }
+      if (btn.dataset.promptPublish) { publishAiPrompt(btn.dataset.promptPublish, btn); return; }
+      if (btn.dataset.promptArchive) { archiveAiPrompt(btn.dataset.promptArchive, btn); return; }
+      if (btn.dataset.promptCompare) { compareAiPromptVersions(btn.dataset.promptCompare); return; }
+      if (btn.dataset.promptSample) { fillAiPromptSample(btn.dataset.promptSample); return; }
+      if (btn.id === "aiPromptSaveMeta") { saveAiPromptMeta(); return; }
+      if (btn.id === "aiPromptSaveVersion") { saveAiPromptVersion(); return; }
+      if (btn.id === "aiPromptTestBtn") { testAiPrompt(); return; }
+      if (btn.id === "aiPromptRunAiTestBtn") { runAiPromptTest(btn); return; }
+      if (btn.dataset.aiRouterSave) { saveAiRouterRow(btn.dataset.aiRouterSave, btn); return; }
+      if (btn.id === "aiSettingsSaveBtn") { saveAiSettingsForm(btn); return; }
+      if (btn.id === "aiPgRunBtn") { runAiPlayground(btn); return; }
+    });
+  }
 
   function escapeHtml(v) {
     return String(v == null ? "" : v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
@@ -843,12 +1645,13 @@ export const ADMIN_JS = `(function () {
     document.querySelectorAll(".nav-item").forEach(function (n) {
       n.classList.toggle("active", n.dataset.view === view);
     });
-    ["dashboard","registrations","demandes","licenses","updates","ai"].forEach(function (name) {
+    ["dashboard","registrations","demandes","licenses","updates","ai","ai-management"].forEach(function (name) {
       var panel = byId("view-" + name);
       if (panel) panel.classList.toggle("hidden", name !== view);
     });
     // Opening the demands tab clears the "unseen" badge.
     if (view === "demandes" && state.demandeUnseen > 0) markDemandesSeen();
+    if (view === "ai-management" && !aiState.initialized) { aiState.initialized = true; setAiView(aiState.view || "dashboard"); }
   }
 
   async function markDemandesSeen() {
@@ -1968,9 +2771,11 @@ export const ADMIN_JS = `(function () {
      "keyDialog","keyForm","keyDialogMode","keyDialogTitle","keyId","keyName","keyProvider","keyModel","keySecret","keyActive","clearKeyWrap","clearKeySecret",
      "doctorDialog","doctorForm","doctorDialogMode","doctorDialogTitle","doctorId","doctorEmail","doctorAssignedKey","doctorMonthlyLimit","doctorDailyLimit","doctorActive","doctorAiEnabled","doctorUsageTools","setMonthlyUsed","setDailyUsed","resetMonthly","resetDaily",
      "cloudDoctorDialog","cloudDoctorRegName","cloudDoctorRegEmail","cloudDoctorAssignedKey","cloudDoctorMonthlyLimit","cloudDoctorDailyLimit","cloudDoctorActive","cloudDoctorAiEnabled","cloudDoctorSubmit","cloudDoctorSkip",
-     "logsDialog","logsTitle","logsRows","credentialsDialog","createdDoctorId","toast"
+     "logsDialog","logsTitle","logsRows","credentialsDialog","createdDoctorId","toast",
+     "aiSubNav","aiContent","aiGenericDialog","aiGenericForm","aiGenericTitle","aiGenericFields"
     ].forEach(function (id) { el[id] = byId(id); });
     bindEvents();
+    bindAiManagementEvents();
     setView("dashboard");
     autoConnect();
   }
