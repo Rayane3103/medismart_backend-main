@@ -338,6 +338,16 @@ function ensureDoctorDefaults(doctor) {
   doctor.daily_used = toLimit(doctor.daily_used, 0);
   doctor.assigned_api_key_id = String(doctor.assigned_api_key_id || doctor.api_key_id || "").trim();
   doctor.ai_plan_id = String(doctor.ai_plan_id || "").trim();
+  // Doctor AI Configuration (Issue 3/5): clinical specialties this doctor
+  // practices (informational + future routing use), a default response
+  // language, a per-doctor model allow-list NARROWER than the plan's (empty
+  // = no override, use the plan's list as-is), and per-doctor opt-outs from
+  // otherwise-global feature flags - all additive to the existing AI Plan
+  // mechanism, not a duplicate of it.
+  doctor.specialty_ids = Array.isArray(doctor.specialty_ids) ? doctor.specialty_ids.filter(Boolean).slice(0, 20) : [];
+  doctor.default_language = String(doctor.default_language || "fr").trim().slice(0, 20) || "fr";
+  doctor.allowed_model_ids_override = Array.isArray(doctor.allowed_model_ids_override) ? doctor.allowed_model_ids_override.filter(Boolean).slice(0, 50) : [];
+  doctor.disabled_flag_keys = Array.isArray(doctor.disabled_flag_keys) ? doctor.disabled_flag_keys.filter(Boolean).slice(0, 50) : [];
 
   if (typeof doctor.ai_enabled !== "boolean") doctor.ai_enabled = true;
   if (typeof doctor.active !== "boolean") doctor.active = true;
@@ -385,6 +395,11 @@ function publicDoctorState(doctor, apiKey = null) {
     daily_remaining: dailyRemaining,
     daily_usage_date: doctor.daily_usage_date,
     renewal_date: doctor.renewal_date,
+    ai_plan_id: doctor.ai_plan_id || "",
+    specialty_ids: doctor.specialty_ids || [],
+    default_language: doctor.default_language || "fr",
+    allowed_model_ids_override: doctor.allowed_model_ids_override || [],
+    disabled_flag_keys: doctor.disabled_flag_keys || [],
     // Compatibility aliases.
     plan_name: "custom",
     plan_label: "Custom",
@@ -421,6 +436,10 @@ function applyDoctorUpdate(doctor, body) {
   if (body.assigned_api_key_id !== undefined) doctor.assigned_api_key_id = String(body.assigned_api_key_id || "").trim();
   if (body.ai_plan_id !== undefined) doctor.ai_plan_id = String(body.ai_plan_id || "").trim();
   if (body.api_key_id !== undefined) doctor.assigned_api_key_id = String(body.api_key_id || "").trim();
+  if (body.specialty_ids !== undefined) doctor.specialty_ids = Array.isArray(body.specialty_ids) ? body.specialty_ids.filter(Boolean).slice(0, 20) : [];
+  if (body.default_language !== undefined) doctor.default_language = String(body.default_language || "fr").trim().slice(0, 20) || "fr";
+  if (body.allowed_model_ids_override !== undefined) doctor.allowed_model_ids_override = Array.isArray(body.allowed_model_ids_override) ? body.allowed_model_ids_override.filter(Boolean).slice(0, 50) : [];
+  if (body.disabled_flag_keys !== undefined) doctor.disabled_flag_keys = Array.isArray(body.disabled_flag_keys) ? body.disabled_flag_keys.filter(Boolean).slice(0, 50) : [];
   if (body.ai_enabled !== undefined) doctor.ai_enabled = !!body.ai_enabled;
   if (body.active !== undefined) doctor.active = !!body.active;
   if (typeof body.set_monthly_used === "number") doctor.monthly_used = Math.max(0, parseInt(body.set_monthly_used, 10));

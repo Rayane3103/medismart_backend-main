@@ -431,6 +431,33 @@ export const ADMIN_HTML = `<!doctype html>
     </form>
   </dialog>
 
+  <dialog class="modal" id="aiDoctorConfigDialog">
+    <form class="modal-card" id="aiDoctorConfigForm">
+      <header class="modal-head">
+        <div><p class="kicker">Configuration IA complète</p><h2 id="aiDoctorConfigTitle">Médecin</h2></div>
+        <button class="icon-close" type="button" data-close-dialog="aiDoctorConfigDialog" aria-label="Fermer">×</button>
+      </header>
+      <input id="aiDoctorConfigId" type="hidden">
+      <div class="checks">
+        <label class="check"><input id="aiDoctorConfigEnabled" type="checkbox"><span>IA activée</span></label>
+      </div>
+      <div class="form-grid">
+        <label><span>AI Plan</span><select id="aiDoctorConfigPlan"><option value="">— Aucun (limites du compte)</option></select></label>
+        <label><span>Langue par défaut</span><select id="aiDoctorConfigLanguage"><option value="fr">Français</option><option value="en">English</option><option value="ar">العربية</option></select></label>
+        <label><span>Limite requêtes / mois</span><input id="aiDoctorConfigMonthly" type="number" min="0"></label>
+        <label><span>Limite requêtes / jour</span><input id="aiDoctorConfigDaily" type="number" min="0"></label>
+      </div>
+      <h4>Spécialités cliniques</h4>
+      <div class="checks" id="aiDoctorConfigSpecialties"></div>
+      <h4>Modèles autorisés (optionnel - restreint davantage le Plan ; laisser tout décoché = pas de restriction supplémentaire)</h4>
+      <div class="checks" id="aiDoctorConfigModels"></div>
+      <h4>Feature Flags désactivés pour ce médecin uniquement</h4>
+      <div class="checks" id="aiDoctorConfigFlags"></div>
+      <p class="subtle">Prompt Library et Knowledge Base restent globaux (partagés par tâche clinique via le Model Router) - ce médecin reçoit automatiquement le prompt/les guidelines configurés pour chaque tâche.</p>
+      <footer class="modal-foot"><button class="btn ghost" type="button" data-close-dialog="aiDoctorConfigDialog">Annuler</button><button class="btn primary" type="submit">Enregistrer</button></footer>
+    </form>
+  </dialog>
+
   <dialog class="modal" id="logsDialog">
     <div class="modal-card modal-card--wide">
       <header class="modal-head">
@@ -1383,8 +1410,18 @@ export const ADMIN_JS = `(function () {
         '<td><input class="ai-router-fallback" type="text" placeholder="ids séparés par virgule" value="' + escapeHtml((r.fallback_model_ids || []).join(",")) + '"></td>' +
         '<td><button class="btn primary" type="button" data-ai-router-save="' + escapeHtml(t.id) + '">Enregistrer</button></td></tr>';
     }).join("");
-    el.aiContent.innerHTML = '<section class="panel"><div class="table-wrap"><table class="data-table"><thead><tr><th>Tâche clinique</th><th>Modèle principal</th><th>Version de prompt</th><th>Température</th><th>Fallback (IDs)</th><th></th></tr></thead><tbody>' +
+    el.aiContent.innerHTML =
+      '<div class="toolbar toolbar--actions"><button class="btn primary" type="button" id="aiRouterAutoAssignBtn">Auto-assigner depuis la Prompt Library</button></div>' +
+      '<section class="panel"><div class="table-wrap"><table class="data-table"><thead><tr><th>Tâche clinique</th><th>Modèle principal</th><th>Version de prompt</th><th>Température</th><th>Fallback (IDs)</th><th></th></tr></thead><tbody>' +
       (rows || '<tr><td colspan="6"><div class="empty">Aucune tâche clinique.</div></td></tr>') + '</tbody></table></div></section>';
+  }
+
+  async function autoAssignAiRouter(btn) {
+    var success = await runAction(btn, async function () {
+      var data = await apiFetch("/api/admin/ai/router/auto-assign", { method: "POST", body: {} });
+      showToast(data.assigned + " tâche(s) assignée(s), " + data.skipped.length + " ignorée(s)");
+    });
+    if (success) await renderAiRouter();
   }
 
   async function saveAiRouterRow(taskId, btn) {
@@ -1520,6 +1557,7 @@ export const ADMIN_JS = `(function () {
       if (btn.id === "aiPromptTestBtn") { testAiPrompt(); return; }
       if (btn.id === "aiPromptRunAiTestBtn") { runAiPromptTest(btn); return; }
       if (btn.dataset.aiRouterSave) { saveAiRouterRow(btn.dataset.aiRouterSave, btn); return; }
+      if (btn.id === "aiRouterAutoAssignBtn") { autoAssignAiRouter(btn); return; }
       if (btn.id === "aiSettingsSaveBtn") { saveAiSettingsForm(btn); return; }
       if (btn.id === "aiPgRunBtn") { runAiPlayground(btn); return; }
     });
@@ -1959,6 +1997,7 @@ export const ADMIN_JS = `(function () {
         '<td class="row-actions">' +
           '<button class="btn ghost" type="button" data-action="logs" data-id="' + escapeHtml(r.doctor_id) + '">Journal</button>' +
           '<button class="btn ghost" type="button" data-action="edit-doctor" data-id="' + escapeHtml(r.doctor_id) + '">Modifier</button>' +
+          '<button class="btn primary" type="button" data-action="ai-config-doctor" data-id="' + escapeHtml(r.doctor_id) + '">Config IA</button>' +
           '<button class="btn danger" type="button" data-action="delete-doctor" data-id="' + escapeHtml(r.doctor_id) + '">Supprimer</button>' +
         '</td></tr>';
     }).join("");
@@ -2549,6 +2588,70 @@ export const ADMIN_JS = `(function () {
     } catch (err) { showToast(err.message, true); } finally { setBusy(btn, false); }
   }
 
+  // Doctor AI Configuration: everything a doctor's AI access depends on,
+  // from one screen (AI Plan, specialties, per-doctor model restriction,
+  // per-doctor flag opt-outs, language, limits) - Prompt Library/Knowledge
+  // Base stay global per clinical task (Model Router), surfaced here only
+  // as a read-only note so the admin knows they don't need to configure
+  // those per doctor.
+  async function openAiDoctorConfigDialog(doctor) {
+    if (!doctor) return;
+    var plans = await loadAiEntity("plans");
+    var specialties = await loadAiEntity("specialties");
+    var models = await loadAiEntity("models");
+    var flags = await loadAiEntity("flags");
+
+    el.aiDoctorConfigId.value = doctor.doctor_id;
+    el.aiDoctorConfigTitle.textContent = doctor.email || "Médecin";
+    el.aiDoctorConfigEnabled.checked = !!doctor.ai_enabled;
+    el.aiDoctorConfigMonthly.value = doctor.monthly_limit || 0;
+    el.aiDoctorConfigDaily.value = doctor.daily_limit || 0;
+    el.aiDoctorConfigLanguage.value = doctor.default_language || "fr";
+
+    el.aiDoctorConfigPlan.innerHTML = '<option value="">— Aucun (limites du compte)</option>' +
+      plans.map(function (p) { return '<option value="' + escapeHtml(p.id) + '"' + (p.id === doctor.ai_plan_id ? " selected" : "") + '>' + escapeHtml(p.name) + '</option>'; }).join("");
+
+    var specialtyIds = doctor.specialty_ids || [];
+    el.aiDoctorConfigSpecialties.innerHTML = specialties.map(function (s) {
+      var checked = specialtyIds.indexOf(s.id) !== -1 ? " checked" : "";
+      return '<label class="check"><input type="checkbox" class="ai-doctor-specialty" value="' + escapeHtml(s.id) + '"' + checked + '><span>' + escapeHtml(s.name) + '</span></label>';
+    }).join("");
+
+    var modelOverrides = doctor.allowed_model_ids_override || [];
+    el.aiDoctorConfigModels.innerHTML = models.map(function (m) {
+      var checked = modelOverrides.indexOf(m.id) !== -1 ? " checked" : "";
+      return '<label class="check"><input type="checkbox" class="ai-doctor-model" value="' + escapeHtml(m.id) + '"' + checked + '><span>' + escapeHtml(m.name) + '</span></label>';
+    }).join("");
+
+    var disabledFlags = doctor.disabled_flag_keys || [];
+    el.aiDoctorConfigFlags.innerHTML = flags.map(function (f) {
+      var checked = disabledFlags.indexOf(f.key) !== -1 ? " checked" : "";
+      return '<label class="check"><input type="checkbox" class="ai-doctor-flag" value="' + escapeHtml(f.key) + '"' + checked + '><span>' + escapeHtml(f.key) + '</span></label>';
+    }).join("") || '<p class="subtle">Aucun feature flag configuré.</p>';
+
+    el.aiDoctorConfigDialog.showModal();
+  }
+
+  async function saveAiDoctorConfig(e) {
+    e.preventDefault();
+    var btn = el.aiDoctorConfigForm.querySelector('button[type="submit"]');
+    var id = el.aiDoctorConfigId.value;
+    var body = {
+      ai_enabled: el.aiDoctorConfigEnabled.checked,
+      ai_plan_id: el.aiDoctorConfigPlan.value,
+      default_language: el.aiDoctorConfigLanguage.value,
+      monthly_limit: parseInt(el.aiDoctorConfigMonthly.value, 10) || 0,
+      daily_limit: parseInt(el.aiDoctorConfigDaily.value, 10) || 0,
+      specialty_ids: Array.prototype.map.call(el.aiDoctorConfigSpecialties.querySelectorAll(".ai-doctor-specialty:checked"), function (i) { return i.value; }),
+      allowed_model_ids_override: Array.prototype.map.call(el.aiDoctorConfigModels.querySelectorAll(".ai-doctor-model:checked"), function (i) { return i.value; }),
+      disabled_flag_keys: Array.prototype.map.call(el.aiDoctorConfigFlags.querySelectorAll(".ai-doctor-flag:checked"), function (i) { return i.value; })
+    };
+    var success = await runAction(btn, async function () {
+      await apiFetch("/api/admin/doctors/" + encodeURIComponent(id), { method: "PATCH", body: body });
+    }, "Configuration IA enregistrée");
+    if (success) { el.aiDoctorConfigDialog.close(); refreshData(); }
+  }
+
   function showCredentials(doctor) {
     el.createdDoctorId.value = doctor.doctor_id || doctor.id || "";
     el.credentialsDialog.showModal();
@@ -2745,7 +2848,8 @@ export const ADMIN_JS = `(function () {
     });
     el.licenseEmailForm.addEventListener("submit", sendLicenseEmail);
     el.keyRows.addEventListener("click", function (e) { handleTableClick(e, { "edit-key": function (id) { openKeyDialog(findKey(id)); }, "delete-key": deleteKey }); });
-    el.doctorRows.addEventListener("click", function (e) { handleTableClick(e, { "edit-doctor": function (id) { openDoctorDialog(findDoctor(id)); }, "logs": openLogs, "delete-doctor": deleteDoctor }); });
+    el.doctorRows.addEventListener("click", function (e) { handleTableClick(e, { "edit-doctor": function (id) { openDoctorDialog(findDoctor(id)); }, "ai-config-doctor": function (id) { openAiDoctorConfigDialog(findDoctor(id)); }, "logs": openLogs, "delete-doctor": deleteDoctor }); });
+    el.aiDoctorConfigForm.addEventListener("submit", saveAiDoctorConfig);
     document.addEventListener("click", function (e) {
       var close = e.target.closest("[data-close-dialog]");
       if (close) { var d = byId(close.dataset.closeDialog); if (d && d.open) d.close(); }
@@ -2770,6 +2874,7 @@ export const ADMIN_JS = `(function () {
      "licenseEmailDialog","licenseEmailForm","licenseEmailKeyMeta","licenseEmailAddress",
      "keyDialog","keyForm","keyDialogMode","keyDialogTitle","keyId","keyName","keyProvider","keyModel","keySecret","keyActive","clearKeyWrap","clearKeySecret",
      "doctorDialog","doctorForm","doctorDialogMode","doctorDialogTitle","doctorId","doctorEmail","doctorAssignedKey","doctorMonthlyLimit","doctorDailyLimit","doctorActive","doctorAiEnabled","doctorUsageTools","setMonthlyUsed","setDailyUsed","resetMonthly","resetDaily",
+     "aiDoctorConfigDialog","aiDoctorConfigForm","aiDoctorConfigId","aiDoctorConfigTitle","aiDoctorConfigEnabled","aiDoctorConfigPlan","aiDoctorConfigLanguage","aiDoctorConfigMonthly","aiDoctorConfigDaily","aiDoctorConfigSpecialties","aiDoctorConfigModels","aiDoctorConfigFlags",
      "cloudDoctorDialog","cloudDoctorRegName","cloudDoctorRegEmail","cloudDoctorAssignedKey","cloudDoctorMonthlyLimit","cloudDoctorDailyLimit","cloudDoctorActive","cloudDoctorAiEnabled","cloudDoctorSubmit","cloudDoctorSkip",
      "logsDialog","logsTitle","logsRows","credentialsDialog","createdDoctorId","toast",
      "aiSubNav","aiContent","aiGenericDialog","aiGenericForm","aiGenericTitle","aiGenericFields"

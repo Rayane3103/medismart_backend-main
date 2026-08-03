@@ -76,6 +76,14 @@ export async function listEnabledModels() {
   const rows = await modelStore.list();
   return rows.filter((m) => m.enabled);
 }
+export async function listModelsForConnector(connectorId) {
+  const rows = await modelStore.list();
+  return rows.filter((m) => m.connector_id === connectorId);
+}
+// Used by the connector "detect models" bulk-import (api/ai-connectors.js) -
+// same defaulting/validation as the regular CRUD create, just callable
+// directly instead of through an HTTP round-trip per model.
+export async function createModel(row) { return modelStore.create(row); }
 
 // Updates the model's passive perf stats after a call - not a config write,
 // so it doesn't go through the CRUD audit log (this fires on every doctor

@@ -138,14 +138,21 @@ export async function handleAiBrainRoutes(req, res, path, ctx) {
   const licenseCheck = await validateLicense(doctor);
   if (!licenseCheck.ok) { err(res, 403, licenseCheck.reason); return true; }
 
-  // ---- Feature Flags (global kill switch) ----
-  if (await isFlagDisabled(GLOBAL_BRAIN_FLAG)) {
+  // ---- Feature Flags (global kill switch, or this doctor's own opt-out - see Doctor AI Configuration) ----
+  if ((doctor.disabled_flag_keys || []).includes(GLOBAL_BRAIN_FLAG) || await isFlagDisabled(GLOBAL_BRAIN_FLAG)) {
     err(res, 503, "IA temporairement désactivée par l'administrateur.");
     return true;
   }
 
   // ---- AI Plan Validation (credits + rate limit) ----
   const plan = doctor.ai_plan_id ? await getPlan(doctor.ai_plan_id) : null;
+  // Doctor AI Configuration: a per-doctor model allow-list narrower than the
+  // plan's (never wider - the plan remains the outer boundary). Applied as
+  // an extra intersection at model-chain build time, see buildModelChain's
+  // plan.allowed_model_ids usage in api/ai-pipeline-core.js.
+  const effectivePlan = (doctor.allowed_model_ids_override || []).length
+    ? { ...(plan || {}), allowed_model_ids: (plan?.allowed_model_ids?.length ? plan.allowed_model_ids.filter((id) => doctor.allowed_model_ids_override.includes(id)) : doctor.allowed_model_ids_override) }
+    : plan;
   const monthlyLimit = plan?.monthly_limit ?? doctor.monthly_limit ?? 0;
   const dailyLimit = plan?.daily_limit ?? doctor.daily_limit ?? 0;
 
@@ -171,7 +178,7 @@ export async function handleAiBrainRoutes(req, res, path, ctx) {
 
   // ---- Clinical Task Detection ----
   const resolvedTaskId = (body.task_id || (await findTaskByActionType(actionType))?.id || "");
-  if (resolvedTaskId && await isFlagDisabled(`task:${resolvedTaskId}`)) {
+  if (resolvedTaskId && ((doctor.disabled_flag_keys || []).includes(`task:${resolvedTaskId}`) || await isFlagDisabled(`task:${resolvedTaskId}`))) {
     err(res, 503, "Cette tâche clinique est temporairement désactivée par l'administrateur.");
     return true;
   }
@@ -179,7 +186,7 @@ export async function handleAiBrainRoutes(req, res, path, ctx) {
   // ---- Prompt Library / Prompt Version / Guidelines Injection / Model Router ----
   const promptRenderStartedAt = Date.now();
   const { rule, promptId, promptVersion, guidelineText, cacheHit: pipelineCacheHit, models } = await resolvePipeline({
-    actionType, taskId: resolvedTaskId, plan, hasImages, hasFiles,
+    actionType, taskId: resolvedTaskId, plan: effectivePlan, hasImages, hasFiles,
     extraKeywords: [body.variables?.chief_complaint, body.variables?.clinical_notes].filter(Boolean),
   });
 
@@ -191,8 +198,10 @@ export async function handleAiBrainRoutes(req, res, path, ctx) {
     return true;
   }
 
-  // ---- Prompt Variables ----
-  const finalMessages = applyPromptLibrary(messages, promptVersion, guidelineText, body.variables || {});
+  // ---- Prompt Variables (defaults {{language}} to this doctor's configured
+  // default when the caller doesn't specify one - see Doctor AI Configuration) ----
+  const variables = { language: doctor.default_language || "fr", ...(body.variables || {}) };
+  const finalMessages = applyPromptLibrary(messages, promptVersion, guidelineText, variables);
   const promptRenderMs = Date.now() - promptRenderStartedAt;
   const maxTokens = Math.min(4096, Math.max(64, parseInt(body.max_tokens || 512, 10)));
 
