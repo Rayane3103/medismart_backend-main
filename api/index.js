@@ -39,7 +39,7 @@ import { handleAiPromptsAdminRoutes } from "./ai-prompts.js";
 import { handleAiCatalogAdminRoutes } from "./ai-catalog.js";
 import { handleAiKnowledgeBaseAdminRoutes } from "./ai-knowledge-base.js";
 import { handleAiFlagsAdminRoutes } from "./ai-flags.js";
-import { handleAiPlansAdminRoutes } from "./ai-plans.js";
+import { handleAiPlansAdminRoutes, getPlan, listPlans } from "./ai-plans.js";
 import { handleAiRouterAdminRoutes } from "./ai-router.js";
 import { handleAiKeysAdminRoutes } from "./ai-keys.js";
 import { handleAiUsageAdminRoutes } from "./ai-usage.js";
@@ -371,7 +371,7 @@ function ensureDoctorDefaults(doctor) {
   return doctor;
 }
 
-function publicDoctorState(doctor, apiKey = null) {
+function publicDoctorState(doctor, apiKey = null, aiPlan = null) {
   const monthlyRemaining = Math.max(0, (doctor.monthly_limit || 0) - (doctor.monthly_used || 0));
   const dailyRemaining = Math.max(0, (doctor.daily_limit || 0) - (doctor.daily_used || 0));
   return {
@@ -400,9 +400,11 @@ function publicDoctorState(doctor, apiKey = null) {
     default_language: doctor.default_language || "fr",
     allowed_model_ids_override: doctor.allowed_model_ids_override || [],
     disabled_flag_keys: doctor.disabled_flag_keys || [],
-    // Compatibility aliases.
-    plan_name: "custom",
-    plan_label: "Custom",
+    // Compatibility aliases. Once an AI Plan is assigned (ai_plan_id), it
+    // takes over as the displayed plan name/label - "custom" only remains
+    // for doctors that never got a real plan assigned.
+    plan_name: aiPlan ? aiPlan.name : "custom",
+    plan_label: aiPlan ? aiPlan.name : "Custom",
     monthly_credits: doctor.monthly_limit || 0,
     used_credits: doctor.monthly_used || 0,
     remaining_credits: monthlyRemaining,
@@ -410,22 +412,28 @@ function publicDoctorState(doctor, apiKey = null) {
   };
 }
 
-function adminDoctorState(doctor, apiKey = null) {
+function adminDoctorState(doctor, apiKey = null, aiPlan = null) {
   return {
-    ...publicDoctorState(doctor, apiKey),
+    ...publicDoctorState(doctor, apiKey, aiPlan),
     id: doctor.id,
     secret: doctor.secret || "",
   };
 }
 
 async function publicDoctorWithAssignedKey(doctor) {
-  const apiKey = await getApiKey(doctor.assigned_api_key_id);
-  return publicDoctorState(doctor, apiKey);
+  const [apiKey, aiPlan] = await Promise.all([
+    getApiKey(doctor.assigned_api_key_id),
+    doctor.ai_plan_id ? getPlan(doctor.ai_plan_id) : null,
+  ]);
+  return publicDoctorState(doctor, apiKey, aiPlan);
 }
 
 async function adminDoctorWithAssignedKey(doctor) {
-  const apiKey = await getApiKey(doctor.assigned_api_key_id);
-  return adminDoctorState(doctor, apiKey);
+  const [apiKey, aiPlan] = await Promise.all([
+    getApiKey(doctor.assigned_api_key_id),
+    doctor.ai_plan_id ? getPlan(doctor.ai_plan_id) : null,
+  ]);
+  return adminDoctorState(doctor, apiKey, aiPlan);
 }
 
 function applyDoctorUpdate(doctor, body) {
@@ -794,10 +802,12 @@ async function handleRequest(req, res) {
       if (path === "/api/admin/doctors" && req.method === "GET") {
         const doctors = await listDoctors();
         const keys = await listApiKeys();
+        const plans = await listPlans();
         const keyMap = Object.fromEntries(keys.map((key) => [key.id, key]));
+        const planMap = Object.fromEntries(plans.map((plan) => [plan.id, plan]));
         const counts = assignedCounts(doctors);
         return ok(res, {
-          rows: doctors.map((doctor) => adminDoctorState(doctor, keyMap[doctor.assigned_api_key_id] || null)),
+          rows: doctors.map((doctor) => adminDoctorState(doctor, keyMap[doctor.assigned_api_key_id] || null, planMap[doctor.ai_plan_id] || null)),
           api_keys: keys.map((key) => publicApiKeyState(key, counts[key.id] || 0)),
           providers: providerConfig(),
           default_limits: DEFAULT_LIMITS,
