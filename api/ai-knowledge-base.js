@@ -100,7 +100,7 @@ export async function seedKnowledgeBaseDefaults() {
     org, title: `${org} guideline`, disease: "", version: 1, status: "draft",
     summary: { fr: "", en: "", ar: "" }, sections: [], active: true,
   }));
-  await guidelineStore.seedIfEmpty(placeholderRows);
+  await guidelineStore.seedIfEmpty(placeholderRows, "org");
   await guidelineStore.seedMissingByName(placeholderRows, "org");
 }
 

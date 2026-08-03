@@ -13,6 +13,21 @@ import { redis, mgetExisting, cached, invalidate } from "./redis.js";
 export function uuid() { return crypto.randomUUID(); }
 export function nowIso() { return new Date().toISOString(); }
 
+// Deterministic id for SEEDED rows only (never for admin-created rows via
+// create(), which keep a random uuid). Two concurrent cold-start Vercel
+// invocations can both observe "index is empty" and both start seeding at
+// the same time - with a random uuid() per row that produces silent
+// duplicates (same logical row, two different ids), which is exactly what
+// happened in production (every catalog got seeded twice). Hashing the
+// keyPrefix + the row's stable identifying field makes every concurrent
+// seeding attempt compute the SAME id for the same logical row, so the
+// second writer just overwrites the first one's key - idempotent by
+// construction, no lock required.
+function seedId(keyPrefix, nameField, seed) {
+  const key = `${keyPrefix}:${String(seed[nameField] ?? "").trim().toLowerCase()}`;
+  return crypto.createHash("sha1").update(key).digest("hex");
+}
+
 export function cleanStr(value, maxLen = 200) {
   return String(value ?? "").trim().slice(0, maxLen);
 }
@@ -53,11 +68,11 @@ export function makeStore({ keyPrefix, indexKey, cacheKey, ensureDefaults, sortF
     invalidate(cacheKey);
   }
 
-  async function seedIfEmpty(seedRows) {
+  async function seedIfEmpty(seedRows, nameField = "name") {
     const ids = (await redis.smembers(indexKey)) || [];
     if (ids.length) return false;
     for (const seed of seedRows) {
-      const row = ensureDefaults({ ...seed, id: seed.id || uuid(), created_at: nowIso() });
+      const row = ensureDefaults({ ...seed, id: seed.id || seedId(keyPrefix, nameField, seed), created_at: nowIso() });
       await redis.set(`${keyPrefix}:${row.id}`, row);
       await redis.sadd(indexKey, row.id);
     }
@@ -76,7 +91,7 @@ export function makeStore({ keyPrefix, indexKey, cacheKey, ensureDefaults, sortF
     const existingNames = new Set(existing.map((r) => String(r[nameField] || "").toLowerCase()));
     const missing = seedRows.filter((s) => !existingNames.has(String(s[nameField] || "").toLowerCase()));
     for (const seed of missing) {
-      const row = ensureDefaults({ ...seed, id: seed.id || uuid(), created_at: nowIso() });
+      const row = ensureDefaults({ ...seed, id: seed.id || seedId(keyPrefix, nameField, seed), created_at: nowIso() });
       await redis.set(`${keyPrefix}:${row.id}`, row);
       await redis.sadd(indexKey, row.id);
     }
