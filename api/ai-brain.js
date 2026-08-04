@@ -203,7 +203,11 @@ export async function handleAiBrainRoutes(req, res, path, ctx) {
   const variables = { language: doctor.default_language || "fr", ...(body.variables || {}) };
   const finalMessages = applyPromptLibrary(messages, promptVersion, guidelineText, variables);
   const promptRenderMs = Date.now() - promptRenderStartedAt;
-  const maxTokens = Math.min(4096, Math.max(64, parseInt(body.max_tokens || 512, 10)));
+  // 512 was too small a default once reasoning-heavy models (GPT-5 and
+  // similar) entered the router chain - they spend part of the token budget
+  // on internal reasoning before the visible answer, so a tight default cut
+  // the real content down to nothing even though the call itself succeeded.
+  const maxTokens = Math.min(8192, Math.max(64, parseInt(body.max_tokens || 2048, 10)));
 
   const settings = await getAiSettings();
 
