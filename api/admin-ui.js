@@ -483,8 +483,8 @@ export const ADMIN_HTML = `<!doctype html>
         <div class="cell-sub" id="cloudDoctorRegEmail"></div>
       </div>
       <div class="form-grid">
-        <label><span>Offre IA (AI Management)</span><select id="cloudDoctorAiPlan"></select></label>
-        <label><span>Clé API legacy (optionnel, ancien système)</span><select id="cloudDoctorAssignedKey"></select></label>
+        <label><span>Offre IA (AI Management)</span><select id="cloudDoctorAiPlan" autocomplete="off"></select></label>
+        <label><span>Clé API legacy (optionnel, ancien système)</span><select id="cloudDoctorAssignedKey" autocomplete="off"></select></label>
         <label><span>Limite requêtes / mois</span><input id="cloudDoctorMonthlyLimit" type="number" min="0" step="1"></label>
         <label><span>Limite requêtes / jour</span><input id="cloudDoctorDailyLimit" type="number" min="0" step="1"></label>
       </div>
@@ -1939,7 +1939,16 @@ export const ADMIN_JS = `(function () {
       html += '<option value="' + escapeHtml(k.id) + '">' + escapeHtml(k.name) + ' — ' + escapeHtml(k.provider_label) + '</option>';
     });
     el.doctorAssignedKey.innerHTML = html;
-    if (el.cloudDoctorAssignedKey) el.cloudDoctorAssignedKey.innerHTML = html;
+    // The "create AI account" dialog only offers ACTIVE legacy keys (system
+    // is deprecated in favor of AI Plans / OpenRouter) - an admin shouldn't
+    // be able to accidentally wire a brand-new doctor to a dead named key.
+    if (el.cloudDoctorAssignedKey) {
+      var activeHtml = '<option value="">Aucune clé (à assigner plus tard)</option>';
+      state.apiKeys.filter(function (k) { return k.active; }).forEach(function (k) {
+        activeHtml += '<option value="' + escapeHtml(k.id) + '">' + escapeHtml(k.name) + ' — ' + escapeHtml(k.provider_label) + '</option>';
+      });
+      el.cloudDoctorAssignedKey.innerHTML = activeHtml;
+    }
   }
 
   function badge(cls, text) { return '<span class="badge ' + cls + '">' + escapeHtml(text) + '</span>'; }
