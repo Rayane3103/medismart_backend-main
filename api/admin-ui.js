@@ -468,6 +468,31 @@ export const ADMIN_HTML = `<!doctype html>
     </div>
   </dialog>
 
+  <dialog class="modal" id="regEditDialog">
+    <div class="modal-card">
+      <header class="modal-head">
+        <div>
+          <p class="kicker">Inscription</p>
+          <h2>Corriger le compte médecin</h2>
+        </div>
+        <button class="icon-close" type="button" data-close-dialog="regEditDialog" aria-label="Fermer">×</button>
+      </header>
+      <div class="panel panel--hint" style="margin-bottom:14px;padding:14px 16px">
+        <div class="cell-title" id="regEditName">—</div>
+        <div class="cell-sub" id="regEditMeta"></div>
+      </div>
+      <div class="form-grid">
+        <label><span>Spécialité</span><input id="regEditSpecialty" type="text" placeholder="ex: Gastroenterologie"></label>
+        <label><span>Forcer la version (mise à jour immédiate)</span><input id="regEditForcedVersion" type="text" placeholder="ex: 2.12.15"></label>
+      </div>
+      <p class="subtle" style="margin-top:8px">Changer la spécialité verrouille le champ : le bureau ne pourra plus l'écraser au prochain sync, et son module IA basculera automatiquement. Forcer une version pousse ce médecin vers cette version dès son prochain lancement, indépendamment du déploiement progressif normal (une release publiée à cette version doit déjà exister).</p>
+      <footer class="modal-foot">
+        <button class="btn ghost" type="button" data-close-dialog="regEditDialog">Annuler</button>
+        <button class="btn primary" type="button" id="regEditSubmit">Enregistrer</button>
+      </footer>
+    </div>
+  </dialog>
+
   <dialog class="modal" id="cloudDoctorDialog">
     <div class="modal-card">
       <header class="modal-head">
@@ -2045,6 +2070,7 @@ export const ADMIN_JS = `(function () {
         '<td><div class="cell-sub">Canal : ' + escapeHtml(r.update_channel || "stable") + '</div>' +
         '<div class="cell-sub">App : ' + escapeHtml(r.app_version || "—") + '</div>' + skus + '</td>' +
         '<td class="row-actions">' +
+          '<button class="btn ghost" type="button" data-action="reg-edit" data-id="' + escapeHtml(r.id) + '">Modifier</button>' +
           '<button class="btn ghost" type="button" data-action="reg-generate" data-id="' + escapeHtml(r.id) + '">Générer clé</button>' +
           '<button class="btn primary" type="button" data-action="reg-entitle" data-id="' + escapeHtml(r.id) + '">Activer MAJ payante</button>' +
           ((r.update_skus || []).length ? '<button class="btn danger" type="button" data-action="reg-revoke-entitle" data-id="' + escapeHtml(r.id) + '" data-sku="' + escapeHtml((r.update_skus || [])[0] || "premium_2026") + '">Révoquer MAJ</button>' : "") +
@@ -2107,6 +2133,37 @@ export const ADMIN_JS = `(function () {
   function findKey(id) { return state.apiKeys.find(function (k) { return k.id === id; }); }
   function findDoctor(id) { return state.rows.find(function (r) { return r.doctor_id === id; }); }
   function findRegistration(id) { return state.registrations.find(function (r) { return r.id === id; }); }
+
+  function openRegEditDialog(id) {
+    var reg = findRegistration(id);
+    if (!reg) { showToast("Inscription introuvable", true); return; }
+    state.pendingRegEditId = id;
+    el.regEditName.textContent = reg.full_name || "—";
+    el.regEditMeta.textContent = "Version app actuelle : " + (reg.app_version || "—") +
+      (reg.specialty_locked ? " · Spécialité verrouillée par admin" : "");
+    el.regEditSpecialty.value = reg.specialty || "";
+    el.regEditForcedVersion.value = reg.forced_min_version || "";
+    el.regEditDialog.showModal();
+  }
+
+  async function submitRegEdit() {
+    var id = state.pendingRegEditId;
+    if (!id) return;
+    setBusy(el.regEditSubmit, true);
+    try {
+      await apiFetch("/api/admin/registrations/" + encodeURIComponent(id), {
+        method: "PATCH",
+        body: JSON.stringify({
+          specialty: el.regEditSpecialty.value.trim(),
+          forced_min_version: el.regEditForcedVersion.value.trim(),
+        }),
+      });
+      el.regEditDialog.close();
+      showToast("Compte médecin mis à jour");
+      refreshData();
+    } catch (err) { showToast(err.message, true); }
+    finally { setBusy(el.regEditSubmit, false); }
+  }
   function findLicense(id) { return state.licenses.find(function (r) { return r.id === id; }); }
   function findRelease(id) { return state.releases.find(function (r) { return r.id === id; }); }
 
@@ -2826,6 +2883,7 @@ export const ADMIN_JS = `(function () {
     el.entitlementForm.addEventListener("submit", saveEntitlement);
     el.keyForm.addEventListener("submit", saveKey);
     el.doctorForm.addEventListener("submit", saveDoctor);
+    el.regEditSubmit.addEventListener("click", submitRegEdit);
     el.cloudDoctorSubmit.addEventListener("click", function () { submitCloudDoctor(false); });
     el.cloudDoctorSkip.addEventListener("click", function () { submitCloudDoctor(true); });
     el.licenseType.addEventListener("change", syncTrialDays);
@@ -2844,7 +2902,8 @@ export const ADMIN_JS = `(function () {
       if (!btn || btn.__busy) return;
       var action = btn.dataset.action;
       var id = btn.dataset.id;
-      if (action === "reg-generate") openLicenseDialog(id);
+      if (action === "reg-edit") openRegEditDialog(id);
+      else if (action === "reg-generate") openLicenseDialog(id);
       else if (action === "reg-cloud-doctor") createCloudDoctor(id);
       else if (action === "reg-delete") deleteRegistration(id, btn);
       else if (action === "reg-entitle") openEntitlementDialog(id);
@@ -2899,6 +2958,7 @@ export const ADMIN_JS = `(function () {
      "keyDialog","keyForm","keyDialogMode","keyDialogTitle","keyId","keyName","keyProvider","keyModel","keySecret","keyActive","clearKeyWrap","clearKeySecret",
      "doctorDialog","doctorForm","doctorDialogMode","doctorDialogTitle","doctorId","doctorEmail","doctorAssignedKey","doctorMonthlyLimit","doctorDailyLimit","doctorActive","doctorAiEnabled","doctorUsageTools","setMonthlyUsed","setDailyUsed","resetMonthly","resetDaily",
      "aiDoctorConfigDialog","aiDoctorConfigForm","aiDoctorConfigId","aiDoctorConfigTitle","aiDoctorConfigEnabled","aiDoctorConfigPlan","aiDoctorConfigLanguage","aiDoctorConfigMonthly","aiDoctorConfigDaily","aiDoctorConfigSpecialties","aiDoctorConfigModels","aiDoctorConfigFlags",
+     "regEditDialog","regEditName","regEditMeta","regEditSpecialty","regEditForcedVersion","regEditSubmit",
      "cloudDoctorDialog","cloudDoctorRegName","cloudDoctorRegEmail","cloudDoctorAiPlan","cloudDoctorAssignedKey","cloudDoctorMonthlyLimit","cloudDoctorDailyLimit","cloudDoctorActive","cloudDoctorAiEnabled","cloudDoctorSubmit","cloudDoctorSkip",
      "logsDialog","logsTitle","logsRows","credentialsDialog","createdDoctorId","toast",
      "aiSubNav","aiContent","aiGenericDialog","aiGenericForm","aiGenericTitle","aiGenericFields"

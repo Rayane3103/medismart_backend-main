@@ -123,6 +123,14 @@ export function ensureRegistrationDefaults(reg) {
   reg.cloud_doctor_id = cleanStr(reg.cloud_doctor_id, 100);
   if (!["stable", "beta", "internal"].includes(reg.update_channel)) reg.update_channel = "stable";
   if (!Array.isArray(reg.update_skus)) reg.update_skus = [];
+  // Admin overrides: specialty_locked freezes `specialty` against the
+  // desktop's own sync push (see applyRegistrationFields) once an admin has
+  // corrected it, so a doctor's stale local value can't silently undo the
+  // fix on next launch. forced_min_version lets an admin push one specific
+  // doctor onto a version immediately (see evaluateUpdateCheck in
+  // api/updates.js) instead of waiting for a global rollout.
+  reg.specialty_locked = Boolean(reg.specialty_locked);
+  reg.forced_min_version = cleanStr(reg.forced_min_version, 40);
   if (!reg.synced_at) reg.synced_at = nowIso();
   if (!reg.created_at) reg.created_at = nowIso();
   return reg;
@@ -179,6 +187,8 @@ function publicRegistrationState(reg) {
     cloud_doctor_id: reg.cloud_doctor_id || "",
     update_channel: reg.update_channel || "stable",
     update_skus: Array.isArray(reg.update_skus) ? reg.update_skus : [],
+    specialty_locked: !!reg.specialty_locked,
+    forced_min_version: reg.forced_min_version || "",
     created_at: reg.created_at,
     updated_at: reg.updated_at,
   };
@@ -399,6 +409,7 @@ function applyRegistrationFields(reg, body) {
   const fields = ["full_name", "specialty", "phone", "email", "clinic_name",
     "address", "wilaya", "device_fingerprint", "app_version", "registered_at"];
   for (const field of fields) {
+    if (field === "specialty" && reg.specialty_locked) continue; // admin-corrected, desktop can't clobber it
     if (body[field] !== undefined && cleanStr(body[field])) reg[field] = body[field];
   }
 }
@@ -586,6 +597,28 @@ export async function handleLicensingAdminRoutes(req, res, path, ctx) {
   }
 
   const regMatch = path.match(/^\/api\/admin\/registrations\/([a-f0-9-]+)$/);
+  if (regMatch && (req.method === "PATCH" || req.method === "PUT")) {
+    const reg = await getRegistration(regMatch[1]);
+    if (!reg) { err(res, 404, "Inscription introuvable"); return true; }
+    const fresh = ensureRegistrationDefaults({ ...reg });
+    const body = await readJson(req);
+    // Corrects a doctor's specialty (e.g. wrongly chosen at signup) so the
+    // desktop switches its specialty module on next sync; locking it stops
+    // the desktop's own stale local value from overwriting the fix again.
+    if (body.specialty !== undefined) {
+      fresh.specialty = cleanStr(body.specialty, 100);
+      fresh.specialty_locked = true;
+    }
+    if (body.specialty_locked === false) fresh.specialty_locked = false;
+    // Forces this ONE doctor onto a specific version immediately (see
+    // evaluateUpdateCheck in api/updates.js) instead of waiting for that
+    // version's normal channel/rollout to reach them.
+    if (body.forced_min_version !== undefined) fresh.forced_min_version = cleanStr(body.forced_min_version, 40);
+    await saveRegistration(fresh);
+    ok(res, { registration: publicRegistrationState(fresh) });
+    return true;
+  }
+
   if (regMatch && req.method === "DELETE") {
     const reg = await getRegistration(regMatch[1]);
     if (reg?.client_registration_id) {

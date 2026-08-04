@@ -587,12 +587,22 @@ export async function evaluateUpdateCheck(body) {
   // Wall-walk: a premium release freezes doctors who have not paid for it.
   const entitlements = await listEntitlementsForRegistration(registration.id);
   const ownedSkus = entitlements.map((e) => e.sku);
-  const sel = await selectReachableRelease({
+  let sel = await selectReachableRelease({
     channel: requestedChannel,
     currentVersion,
     ownedSkus,
     registrationId: registration.id,
   });
+
+  // Admin force-update override (per registration, set via the admin panel):
+  // an admin correcting one specific doctor's install shouldn't have to wait
+  // on that version's normal rollout%/paid-wall logic - point them straight
+  // at the exact published release for the forced version, bypassing both.
+  if (registration.forced_min_version && isNewerVersion(registration.forced_min_version, currentVersion)) {
+    const forcedRelease = (await listReleases()).find((r) => r.channel === requestedChannel
+      && r.status === "published" && r.version === registration.forced_min_version);
+    if (forcedRelease) sel = { target: forcedRelease, forced: true };
+  }
 
   if (sel.upToDate) {
     return {
@@ -629,7 +639,7 @@ export async function evaluateUpdateCheck(body) {
   }
 
   const release = sel.target;
-  const needsEntitlement = release.severity === "paid" || release.severity === "paid_mandatory";
+  const needsEntitlement = !sel.forced && (release.severity === "paid" || release.severity === "paid_mandatory");
 
   return {
     response: {
@@ -662,7 +672,7 @@ export async function evaluateUpdateCheck(body) {
       install: {
         background_download: true,
         require_confirm_restart: true,
-        force_when_idle: release.severity === "mandatory" || release.severity === "paid_mandatory",
+        force_when_idle: sel.forced || release.severity === "mandatory" || release.severity === "paid_mandatory",
       },
       entitlement: {
         required: needsEntitlement,
