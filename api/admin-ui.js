@@ -482,8 +482,8 @@ export const ADMIN_HTML = `<!doctype html>
         <div class="cell-sub" id="regEditMeta"></div>
       </div>
       <div class="form-grid">
-        <label><span>Spécialité</span><input id="regEditSpecialty" type="text" placeholder="ex: Gastroenterologie"></label>
-        <label><span>Forcer la version (mise à jour immédiate)</span><input id="regEditForcedVersion" type="text" placeholder="ex: 2.12.15"></label>
+        <label><span>Spécialité</span><select id="regEditSpecialty" autocomplete="off"></select></label>
+        <label><span>Forcer la version (mise à jour immédiate)</span><select id="regEditForcedVersion" autocomplete="off"></select></label>
       </div>
       <p class="subtle" style="margin-top:8px">Changer la spécialité verrouille le champ : le bureau ne pourra plus l'écraser au prochain sync, et son module IA basculera automatiquement. Forcer une version pousse ce médecin vers cette version dès son prochain lancement, indépendamment du déploiement progressif normal (une release publiée à cette version doit déjà exister).</p>
       <footer class="modal-foot">
@@ -2141,8 +2141,26 @@ export const ADMIN_JS = `(function () {
     el.regEditName.textContent = reg.full_name || "—";
     el.regEditMeta.textContent = "Version app actuelle : " + (reg.app_version || "—") +
       (reg.specialty_locked ? " · Spécialité verrouillée par admin" : "");
-    el.regEditSpecialty.value = reg.specialty || "";
-    el.regEditForcedVersion.value = reg.forced_min_version || "";
+
+    // Dropdown built from specialties ALREADY IN USE across synced
+    // registrations - this is the exact vocabulary the desktop app itself
+    // sends (whatever it calls its own modules), so it's guaranteed
+    // compatible instead of guessing at an internal desktop enum.
+    var specialties = Array.from(new Set(
+      state.registrations.map(function (r) { return r.specialty; }).filter(Boolean)
+    )).sort();
+    if (reg.specialty && specialties.indexOf(reg.specialty) === -1) specialties.push(reg.specialty);
+    el.regEditSpecialty.innerHTML = '<option value="">— Aucune</option>' +
+      specialties.map(function (s) { return '<option value="' + escapeHtml(s) + '"' + (s === reg.specialty ? " selected" : "") + '>' + escapeHtml(s) + '</option>'; }).join("");
+
+    // Dropdown built from PUBLISHED releases only - forcing a version with
+    // no matching published release is a silent no-op (see evaluateUpdateCheck).
+    var versions = (state.releases || []).filter(function (r) { return r.status === "published"; })
+      .map(function (r) { return r.version; });
+    versions = Array.from(new Set(versions)).sort();
+    el.regEditForcedVersion.innerHTML = '<option value="">— Aucune (pas de forçage)</option>' +
+      versions.map(function (v) { return '<option value="' + escapeHtml(v) + '"' + (v === reg.forced_min_version ? " selected" : "") + '>' + escapeHtml(v) + '</option>'; }).join("");
+
     el.regEditDialog.showModal();
   }
 
