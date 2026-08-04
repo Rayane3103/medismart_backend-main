@@ -54,9 +54,31 @@ function openAiCompatibleRequest(connector, model, apiKey) {
   return { url: `${base}/chat/completions`, headers };
 }
 
+// OpenAI's Structured Outputs (and every OpenAI-compatible passthrough,
+// including OpenRouter -> OpenAI/Azure) HARD REQUIRE the literal word "json"
+// to appear somewhere in the input when response_format is json_object -
+// otherwise it's a 400, not a fallback-worthy provider error. A Prompt
+// Library entry can define a structured output_schema without ever using
+// that exact word, and plain chat (no prompt attached) never will - so
+// forcing json_mode from the model's own flag alone breaks those calls
+// outright. Guarantee the word is present instead of hoping every prompt
+// author remembers it.
+function messagesContainWordJson(messages) {
+  return messages.some((m) => {
+    const content = m.content;
+    if (typeof content === "string") return /json/i.test(content);
+    if (Array.isArray(content)) return content.some((p) => typeof p?.text === "string" && /json/i.test(p.text));
+    return false;
+  });
+}
+
 async function callOpenAiCompatible({ connector, apiKey, model, messages, maxTokens, temperature, topP, timeoutMs, jsonMode }) {
   const { url, headers } = openAiCompatibleRequest(connector, model, apiKey);
-  const body = { model, messages, max_tokens: maxTokens, temperature, top_p: topP };
+  let effectiveMessages = messages;
+  if (jsonMode && !messagesContainWordJson(messages)) {
+    effectiveMessages = [...messages, { role: "system", content: "Respond only with valid JSON." }];
+  }
+  const body = { model, messages: effectiveMessages, max_tokens: maxTokens, temperature, top_p: topP };
   if (jsonMode) body.response_format = { type: "json_object" };
   const upstream = await withTimeout(
     (signal) => fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal }),
