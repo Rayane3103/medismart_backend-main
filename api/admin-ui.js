@@ -1994,7 +1994,9 @@ export const ADMIN_JS = `(function () {
         (r.active ? badge("green","Actif") : badge("red","Inactif")) +
         (r.ai_enabled ? badge("blue","IA on") : badge("amber","IA off")) + '</td>' +
         '<td><div class="cell-sub">Connexion automatique</div><div class="cell-sub">App desktop après activation</div></td>' +
-        '<td><div class="cell-sub">' + escapeHtml(r.assigned_api_key_name || "Aucune") + '</div><div class="cell-sub">' + escapeHtml(r.ai_provider_label || "") + ' ' + escapeHtml(r.ai_model || "") + '</div></td>' +
+        '<td>' + (r.ai_plan_id
+          ? '<div class="cell-title">' + badge("violet", escapeHtml(r.plan_label || "AI Plan")) + '</div><div class="cell-sub">AI Management (nouveau système)</div>'
+          : '<div class="cell-sub">' + escapeHtml(r.assigned_api_key_name || "Aucune") + '</div><div class="cell-sub">' + escapeHtml(r.ai_provider_label || "") + ' ' + escapeHtml(r.ai_model || "") + ' (legacy)</div>') + '</td>' +
         '<td>' + usageBars(r.monthly_used, r.monthly_limit, r.daily_used, r.daily_limit) + '</td>' +
         '<td class="row-actions">' +
           '<button class="btn ghost" type="button" data-action="logs" data-id="' + escapeHtml(r.doctor_id) + '">Journal</button>' +
@@ -2003,7 +2005,7 @@ export const ADMIN_JS = `(function () {
           '<button class="btn danger" type="button" data-action="delete-doctor" data-id="' + escapeHtml(r.doctor_id) + '">Supprimer</button>' +
         '</td></tr>';
     }).join("");
-    el.doctorRows.innerHTML = '<table class="data-table"><thead><tr><th>Compte</th><th>Connexion</th><th>Clé IA</th><th>Requêtes</th><th></th></tr></thead><tbody>' + html + '</tbody></table>';
+    el.doctorRows.innerHTML = '<table class="data-table"><thead><tr><th>Compte</th><th>Connexion</th><th>Offre IA</th><th>Requêtes</th><th></th></tr></thead><tbody>' + html + '</tbody></table>';
   }
 
   function filteredRegistrations() {
