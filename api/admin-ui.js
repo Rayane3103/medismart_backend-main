@@ -483,13 +483,15 @@ export const ADMIN_HTML = `<!doctype html>
         <div class="cell-sub" id="cloudDoctorRegEmail"></div>
       </div>
       <div class="form-grid">
-        <label><span>Clé API assignée</span><select id="cloudDoctorAssignedKey"></select></label>
+        <label><span>Offre IA (AI Management)</span><select id="cloudDoctorAiPlan"></select></label>
+        <label><span>Clé API legacy (optionnel, ancien système)</span><select id="cloudDoctorAssignedKey"></select></label>
         <label><span>Limite requêtes / mois</span><input id="cloudDoctorMonthlyLimit" type="number" min="0" step="1"></label>
         <label><span>Limite requêtes / jour</span><input id="cloudDoctorDailyLimit" type="number" min="0" step="1"></label>
       </div>
+      <p class="subtle" style="margin-top:8px">Laissez la clé API legacy sur « Aucune » — l'offre IA ci-dessus active le nouveau système (Prompt Library, Router, OpenRouter, etc).</p>
       <div class="checks">
         <label class="check"><input id="cloudDoctorActive" type="checkbox" checked><span>Compte actif</span></label>
-        <label class="check"><input id="cloudDoctorAiEnabled" type="checkbox" checked><span>IA activée</span></label>
+        <label class="check"><input id="cloudDoctorAiEnabled" type="checkbox"><span>IA activée</span></label>
       </div>
       <footer class="modal-foot">
         <button class="btn ghost" type="button" data-close-dialog="cloudDoctorDialog">Annuler</button>
@@ -2341,18 +2343,28 @@ export const ADMIN_JS = `(function () {
     }, "Entitlement révoqué");
   }
 
-  function openCloudDoctorDialog(regId) {
+  async function openCloudDoctorDialog(regId) {
     var reg = findRegistration(regId);
     if (!reg) { showToast("Inscription introuvable", true); return; }
     if (reg.cloud_doctor_id) { showToast("Un compte IA est déjà lié à cette inscription.", true); return; }
     state.pendingCloudDoctorRegistrationId = regId;
     el.cloudDoctorRegName.textContent = reg.full_name || "—";
     el.cloudDoctorRegEmail.textContent = [reg.specialty, reg.email, reg.phone, reg.wilaya].filter(Boolean).join(" · ") || "—";
-    el.cloudDoctorAssignedKey.value = state.apiKeys[0] ? state.apiKeys[0].id : "";
+
+    // New subscriptions default onto the new AI Management system (a real
+    // AI Plan), never onto the legacy named-key path - that select stays on
+    // "Aucune" unless an admin deliberately picks a legacy key instead.
+    var plans = await loadAiEntity("plans");
+    var cheapest = plans.filter(function (p) { return p.active; })
+      .sort(function (a, b) { return (a.monthly_limit || 0) - (b.monthly_limit || 0); })[0];
+    el.cloudDoctorAiPlan.innerHTML = '<option value="">— Aucune (limites du compte / legacy)</option>' +
+      plans.map(function (p) { return '<option value="' + escapeHtml(p.id) + '">' + escapeHtml(p.name) + '</option>'; }).join("");
+    el.cloudDoctorAiPlan.value = cheapest ? cheapest.id : "";
+    el.cloudDoctorAssignedKey.value = "";
     el.cloudDoctorMonthlyLimit.value = state.defaults.monthly_limit;
     el.cloudDoctorDailyLimit.value = state.defaults.daily_limit;
     el.cloudDoctorActive.checked = true;
-    el.cloudDoctorAiEnabled.checked = true;
+    el.cloudDoctorAiEnabled.checked = false;
     el.cloudDoctorDialog.showModal();
   }
 
@@ -2362,6 +2374,7 @@ export const ADMIN_JS = `(function () {
     var body = {};
     if (!useDefaults) {
       body = {
+        ai_plan_id: el.cloudDoctorAiPlan.value,
         assigned_api_key_id: el.cloudDoctorAssignedKey.value,
         monthly_limit: parseInt(el.cloudDoctorMonthlyLimit.value, 10) || 0,
         daily_limit: parseInt(el.cloudDoctorDailyLimit.value, 10) || 0,
@@ -2547,7 +2560,7 @@ export const ADMIN_JS = `(function () {
     el.doctorMonthlyLimit.value = row ? row.monthly_limit : state.defaults.monthly_limit;
     el.doctorDailyLimit.value = row ? row.daily_limit : state.defaults.daily_limit;
     el.doctorActive.checked = row ? !!row.active : true;
-    el.doctorAiEnabled.checked = row ? !!row.ai_enabled : true;
+    el.doctorAiEnabled.checked = row ? !!row.ai_enabled : false;
     el.doctorUsageTools.classList.toggle("hidden", !row);
     el.doctorDialog.showModal();
   }
@@ -2875,7 +2888,7 @@ export const ADMIN_JS = `(function () {
      "keyDialog","keyForm","keyDialogMode","keyDialogTitle","keyId","keyName","keyProvider","keyModel","keySecret","keyActive","clearKeyWrap","clearKeySecret",
      "doctorDialog","doctorForm","doctorDialogMode","doctorDialogTitle","doctorId","doctorEmail","doctorAssignedKey","doctorMonthlyLimit","doctorDailyLimit","doctorActive","doctorAiEnabled","doctorUsageTools","setMonthlyUsed","setDailyUsed","resetMonthly","resetDaily",
      "aiDoctorConfigDialog","aiDoctorConfigForm","aiDoctorConfigId","aiDoctorConfigTitle","aiDoctorConfigEnabled","aiDoctorConfigPlan","aiDoctorConfigLanguage","aiDoctorConfigMonthly","aiDoctorConfigDaily","aiDoctorConfigSpecialties","aiDoctorConfigModels","aiDoctorConfigFlags",
-     "cloudDoctorDialog","cloudDoctorRegName","cloudDoctorRegEmail","cloudDoctorAssignedKey","cloudDoctorMonthlyLimit","cloudDoctorDailyLimit","cloudDoctorActive","cloudDoctorAiEnabled","cloudDoctorSubmit","cloudDoctorSkip",
+     "cloudDoctorDialog","cloudDoctorRegName","cloudDoctorRegEmail","cloudDoctorAiPlan","cloudDoctorAssignedKey","cloudDoctorMonthlyLimit","cloudDoctorDailyLimit","cloudDoctorActive","cloudDoctorAiEnabled","cloudDoctorSubmit","cloudDoctorSkip",
      "logsDialog","logsTitle","logsRows","credentialsDialog","createdDoctorId","toast",
      "aiSubNav","aiContent","aiGenericDialog","aiGenericForm","aiGenericTitle","aiGenericFields"
     ].forEach(function (id) { el[id] = byId(id); });

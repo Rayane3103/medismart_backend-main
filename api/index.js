@@ -349,7 +349,10 @@ function ensureDoctorDefaults(doctor) {
   doctor.allowed_model_ids_override = Array.isArray(doctor.allowed_model_ids_override) ? doctor.allowed_model_ids_override.filter(Boolean).slice(0, 50) : [];
   doctor.disabled_flag_keys = Array.isArray(doctor.disabled_flag_keys) ? doctor.disabled_flag_keys.filter(Boolean).slice(0, 50) : [];
 
-  if (typeof doctor.ai_enabled !== "boolean") doctor.ai_enabled = true;
+  // AI access is opt-in: an admin must explicitly enable it per doctor from
+  // the admin panel. Any doctor object created/loaded without an explicit
+  // ai_enabled value defaults to disabled, not enabled.
+  if (typeof doctor.ai_enabled !== "boolean") doctor.ai_enabled = false;
   if (typeof doctor.active !== "boolean") doctor.active = true;
   if (!doctor.renewal_date) doctor.renewal_date = nextRenewalDate();
   if (!doctor.daily_usage_date) doctor.daily_usage_date = today();
@@ -715,6 +718,18 @@ async function handleRequest(req, res) {
           return err(res, 409, "Un compte IA est déjà lié à cette inscription");
         }
         const body = await readJson(req);
+        // A subscribed doctor's cloud AI account defaults onto the new AI
+        // Management system (ai_plan_id -> AI Management catalog/connectors/
+        // OpenRouter etc.), never onto the legacy named-key path
+        // (assigned_api_key_id, Groq/Gemini only) unless an admin explicitly
+        // picks a legacy key. If the admin doesn't pick a plan either, fall
+        // back to the cheapest active AI Plan so "Défauts" still activates
+        // real AI instead of silently leaving the doctor unconfigured.
+        let aiPlanId = String(body.ai_plan_id || "").trim();
+        if (!aiPlanId && !String(body.assigned_api_key_id || "").trim()) {
+          const activePlans = (await listPlans()).filter((p) => p.active);
+          aiPlanId = activePlans.sort((a, b) => (a.monthly_limit || 0) - (b.monthly_limit || 0))[0]?.id || "";
+        }
         const doctor = ensureDoctorDefaults({
           id: uuid(),
           email: String(body.email || reg.email || "").trim(),
@@ -724,7 +739,9 @@ async function handleRequest(req, res) {
           monthly_limit: toLimit(body.monthly_limit, DEFAULT_LIMITS.monthly_limit),
           daily_limit: toLimit(body.daily_limit, DEFAULT_LIMITS.daily_limit),
           assigned_api_key_id: String(body.assigned_api_key_id || "").trim(),
-          ai_enabled: body.ai_enabled !== false,
+          ai_plan_id: aiPlanId,
+          // Opt-in: AI stays off until an admin explicitly enables it here.
+          ai_enabled: body.ai_enabled === true,
           active: body.active !== false,
         });
         await saveDoctor(doctor);
@@ -826,7 +843,9 @@ async function handleRequest(req, res) {
           monthly_limit: toLimit(body.monthly_limit, DEFAULT_LIMITS.monthly_limit),
           daily_limit: toLimit(body.daily_limit, DEFAULT_LIMITS.daily_limit),
           assigned_api_key_id: String(body.assigned_api_key_id || body.api_key_id || "").trim(),
-          ai_enabled: body.ai_enabled !== false,
+          ai_plan_id: String(body.ai_plan_id || "").trim(),
+          // Opt-in: AI stays off until an admin explicitly enables it here.
+          ai_enabled: body.ai_enabled === true,
           active: body.active !== false,
         });
         await saveDoctor(doctor);
