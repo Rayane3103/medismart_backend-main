@@ -2171,10 +2171,10 @@ export const ADMIN_JS = `(function () {
     try {
       await apiFetch("/api/admin/registrations/" + encodeURIComponent(id), {
         method: "PATCH",
-        body: JSON.stringify({
+        body: {
           specialty: el.regEditSpecialty.value.trim(),
           forced_min_version: el.regEditForcedVersion.value.trim(),
-        }),
+        },
       });
       el.regEditDialog.close();
       showToast("Compte médecin mis à jour");
