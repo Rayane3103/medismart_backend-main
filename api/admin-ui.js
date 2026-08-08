@@ -2630,7 +2630,12 @@ export const ADMIN_JS = `(function () {
     el.doctorMonthlyLimit.value = row ? row.monthly_limit : state.defaults.monthly_limit;
     el.doctorDailyLimit.value = row ? row.daily_limit : state.defaults.daily_limit;
     el.doctorActive.checked = row ? !!row.active : true;
-    el.doctorAiEnabled.checked = row ? !!row.ai_enabled : false;
+    // Defaults to checked for a NEW account: every other account-creation
+    // path this session auto-provisions AI (OpenRouter, ai_plan_id) --
+    // this legacy dialog defaulting to unchecked silently created
+    // AI-disabled accounts (ai-brain.js's doctor.ai_enabled check ->
+    // 403 "IA desactivee pour ce compte") with no visual warning.
+    el.doctorAiEnabled.checked = row ? !!row.ai_enabled : true;
     el.doctorUsageTools.classList.toggle("hidden", !row);
     el.doctorDialog.showModal();
   }
