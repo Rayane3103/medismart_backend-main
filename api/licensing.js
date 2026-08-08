@@ -439,6 +439,19 @@ async function upsertRegistrationFromBody(body) {
   applyRegistrationFields(reg, body);
   ensureRegistrationDefaults(reg);
   if (!reg.full_name) return { error: "full_name requis" };
+  // Block a second PENDING registration under an email that's already
+  // queued for review -- stops accidental double-submits of the web
+  // plan-selection form. Deliberately does not block emails that are
+  // already "activated": that's a genuine reinstall/second-device case
+  // (desktop + web, or a lost client_registration_id after reinstall),
+  // and web-full's own POST /api/auth/register already refuses to create
+  // a second real account for an email that already has one.
+  if (reg.email) {
+    const dupe = (await listRegistrations()).find(
+      (r) => r.email === reg.email && r.status !== "activated" && r.client_registration_id !== clientId
+    );
+    if (dupe) return { error: "Cet email a deja une inscription en attente de validation." };
+  }
   await saveRegistration(reg);
   await redis.sadd("registrations:index", reg.id);
   return { registration: reg, created: true };
@@ -631,6 +644,21 @@ export async function handleLicensingAdminRoutes(req, res, path, ctx) {
 
   if (regMatch && req.method === "DELETE") {
     const reg = await getRegistration(regMatch[1]);
+    // Revoke the linked license (not just delete the registration record):
+    // web-full's login re-checks the license's activation token on every
+    // sign-in (POST /api/activation/verify), so revoking here is what
+    // actually locks the doctor out on their next login. Deleting the
+    // registration alone would leave the license valid and the account
+    // fully usable.
+    if (reg?.license_id) {
+      const stored = await getLicense(reg.license_id);
+      if (stored && stored.status !== "revoked") {
+        const license = ensureLicenseDefaults({ ...stored });
+        license.status = "revoked";
+        license.revoked_at = nowIso();
+        await saveLicense(license);
+      }
+    }
     if (reg?.client_registration_id) {
       await redis.del(`registration:client:${reg.client_registration_id}`);
     }
