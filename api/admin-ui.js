@@ -2259,7 +2259,7 @@ export const ADMIN_JS = `(function () {
     }
     var rows = filteredDemandes();
     el.demandeCount.textContent = rows.length;
-    if (!rows.length) { el.demandeRows.innerHTML = '<div class="empty">Aucune demande d\'installation pour le moment.</div>'; return; }
+    if (!rows.length) { el.demandeRows.innerHTML = '<div class="empty">Aucune demande d\\'installation pour le moment.</div>'; return; }
     var seenAt = state.demandesSeenAt || "";
     var html = rows.map(function (r) {
       var stCls = r.status === "contacted" ? "green" : r.status === "archived" ? "red" : "amber";
