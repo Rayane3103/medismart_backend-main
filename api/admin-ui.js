@@ -892,17 +892,14 @@ export const ADMIN_JS = `(function () {
     ] }
   };
 
-  // Trimmed down from all 17 sub-screens; Guidelines, Usage, Costs, Logs
-  // and Audit stayed hidden (safety text and pure observability, rarely
-  // touched day to day). Feature Flags is back in the nav -- it's the
-  // ONLY place to flip GLOBAL_BRAIN_FLAG ("ai_brain_enabled"), and
-  // /api/me/ai/chat's global-kill-switch check (api/ai-brain.js) is one
-  // of just two things that can 503 that endpoint -- hiding this tab
-  // would have left a disabled flag with no UI to re-enable it. Every
-  // hidden screen's routes/renderers/data are untouched, just not
-  // reachable from this sub-nav -- add the key back to AI_SUBVIEWS to
-  // resurface one.
-  var AI_SUBVIEWS = ["dashboard", "connectors", "models", "prompts", "specialties", "tasks", "router", "flags", "plans", "keys", "settings", "playground"];
+  // Trimmed down from all 17 sub-screens; Guidelines, Logs and Audit
+  // stayed hidden (safety text and admin action history, rarely touched
+  // day to day). Usage + Costs restored (per-doctor request volume and
+  // $ spend), same as Feature Flags earlier (the only place to flip
+  // GLOBAL_BRAIN_FLAG). Every hidden screen's routes/renderers/data are
+  // untouched, just not reachable from this sub-nav -- add the key back
+  // to AI_SUBVIEWS to resurface one.
+  var AI_SUBVIEWS = ["dashboard", "connectors", "models", "prompts", "specialties", "tasks", "router", "flags", "plans", "keys", "usage", "costs", "settings", "playground"];
   var AI_SUBVIEW_LABELS = {
     dashboard: "Tableau de bord", connectors: "Connecteurs", models: "Modèles", prompts: "Prompt Library", specialties: "Spécialités",
     tasks: "Tâches cliniques", guidelines: "Guidelines", router: "Model Router", flags: "Feature Flags",
