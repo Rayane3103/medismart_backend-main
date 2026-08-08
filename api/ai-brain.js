@@ -24,6 +24,7 @@ import { loadActivePromptVersion } from "./ai-prompts.js";
 import { findTaskByActionType, getTask } from "./ai-catalog.js";
 import { retrieveGuidelineExcerpts } from "./ai-knowledge-base.js";
 import { getPlan } from "./ai-plans.js";
+import { seedModelDefaults } from "./ai-models.js";
 import { supportsStreaming, streamAiProviderChat } from "./ai-providers.js";
 import { checkRateLimit } from "./ai-ratelimit.js";
 import { recordAiUsage, recordPromptFeedback } from "./ai-usage.js";
@@ -182,6 +183,17 @@ export async function handleAiBrainRoutes(req, res, path, ctx) {
     err(res, 503, "Cette tâche clinique est temporairement désactivée par l'administrateur.");
     return true;
   }
+
+  // ---- Model catalog self-heal ----
+  // seedModelDefaults()/seedConnectorDefaults() previously ran ONLY from the
+  // admin panel's Connectors/Models tabs (handleAiConnectorsAdminRoutes /
+  // handleAiModelsAdminRoutes) -- on a deployment where no admin had ever
+  // opened those specific tabs, ai:model stayed genuinely empty and every
+  // doctor got "Aucun modele IA disponible" (line ~360 below) forever, with
+  // no way to recover short of an admin stumbling into the right screen.
+  // seedIfEmpty() is a no-op once the store is populated, so this is a cheap
+  // safety net, not a real seeding cost on the hot path after the first call.
+  await seedModelDefaults();
 
   // ---- Prompt Library / Prompt Version / Guidelines Injection / Model Router ----
   const promptRenderStartedAt = Date.now();

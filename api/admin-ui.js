@@ -225,21 +225,12 @@ export const ADMIN_HTML = `<!doctype html>
 
         <div class="view hidden" id="view-ai">
           <div class="toolbar toolbar--actions">
-            <button type="button" class="btn primary" id="newKeyButton">+ Clé API</button>
             <button type="button" class="btn primary" id="newDoctorButton">+ Compte médecin IA</button>
           </div>
-          <section class="panel">
-            <div class="panel-head"><h2>Clés API nommées</h2><span id="keyCount" class="panel-count">0</span></div>
-            <div class="table-wrap" id="keyRows"></div>
-          </section>
           <div class="toolbar">
             <label class="search-field">
               <span>Rechercher</span>
-              <input id="searchInput" type="search" placeholder="Email, ID médecin, clé…">
-            </label>
-            <label>
-              <span>Clé assignée</span>
-              <select id="keyFilter"><option value="all">Toutes</option></select>
+              <input id="searchInput" type="search" placeholder="Email, ID médecin…">
             </label>
           </div>
           <section class="panel">
@@ -384,27 +375,6 @@ export const ADMIN_HTML = `<!doctype html>
         <label class="full"><span>Note interne (optionnel)</span><input id="entitlementNote" placeholder="Virement reçu le…"></label>
       </div>
       <footer class="modal-foot"><button class="btn ghost" type="button" data-close-dialog="entitlementDialog">Annuler</button><button class="btn primary" type="submit">Activer</button></footer>
-    </form>
-  </dialog>
-
-  <dialog class="modal" id="keyDialog">
-    <form class="modal-card" id="keyForm">
-      <header class="modal-head">
-        <div><p class="kicker" id="keyDialogMode">Créer</p><h2 id="keyDialogTitle">Clé API</h2></div>
-        <button class="icon-close" type="button" data-close-dialog="keyDialog" aria-label="Fermer">×</button>
-      </header>
-      <input id="keyId" type="hidden">
-      <div class="form-grid">
-        <label><span>Nom</span><input id="keyName" required placeholder="Groq principal, Gemini backup…"></label>
-        <label><span>Fournisseur</span><select id="keyProvider"></select></label>
-        <label><span>Modèle</span><input id="keyModel" required></label>
-        <label><span>Secret API</span><input id="keySecret" type="password" autocomplete="off" placeholder="Coller la clé"></label>
-      </div>
-      <div class="checks">
-        <label class="check"><input id="keyActive" type="checkbox" checked><span>Active</span></label>
-        <label class="check hidden" id="clearKeyWrap"><input id="clearKeySecret" type="checkbox"><span>Effacer le secret enregistré</span></label>
-      </div>
-      <footer class="modal-foot"><button class="btn ghost" type="button" data-close-dialog="keyDialog">Annuler</button><button class="btn primary" type="submit">Enregistrer</button></footer>
     </form>
   </dialog>
 
@@ -796,7 +766,7 @@ export const ADMIN_JS = `(function () {
     session: null,
     view: "dashboard",
     rows: [], apiKeys: [], providers: {}, defaults: { monthly_limit: 500, daily_limit: 50 },
-    query: "", keyFilter: "all",
+    query: "",
     registrations: [], licenses: [], stats: {},
     releases: [], updateStats: {}, heartbeats: [],
     demandes: [], demandeUnseen: 0,
@@ -1827,11 +1797,8 @@ export const ADMIN_JS = `(function () {
     state.providers = data.providers || {};
     state.defaults = data.default_limits || state.defaults;
     state.loading.doctors = false;
-    renderProviderOptions();
-    renderKeyFilter();
     renderDoctorKeyOptions();
     renderMetrics();
-    renderKeys();
     renderDoctors();
   }
 
@@ -1918,13 +1885,10 @@ export const ADMIN_JS = `(function () {
   }
 
   function renderAll() {
-    renderProviderOptions();
-    renderKeyFilter();
     renderDoctorKeyOptions();
     renderLicenseMetrics();
     renderUpdateMetrics();
     renderMetrics();
-    renderKeys();
     renderDoctors();
     renderRegistrations();
     renderLicenses();
@@ -1984,29 +1948,13 @@ export const ADMIN_JS = `(function () {
     if (state.loading.doctors) { el.metrics.innerHTML = skeletonStats(AI_METRIC_LABELS); return; }
     var totalDoctors = state.rows.length;
     var activeDoctors = state.rows.filter(function (r) { return r.active; }).length;
-    var totalKeys = state.apiKeys.length;
     var monthlyReq = state.rows.reduce(function (sum, r) { return sum + (r.monthly_used || 0); }, 0);
     var dailyReq = state.rows.reduce(function (sum, r) { return sum + (r.daily_used || 0); }, 0);
     el.metrics.innerHTML =
-      statCard("Clés API", totalKeys, "accent-violet") +
       statCard("Comptes IA", totalDoctors, "accent-blue") +
       statCard("Comptes actifs", activeDoctors, "accent-green") +
       statCard("Requêtes aujourd'hui", dailyReq, "accent-amber") +
       statCard("Requêtes ce mois", monthlyReq, "");
-  }
-
-  function renderProviderOptions() {
-    el.keyProvider.innerHTML = Object.keys(state.providers).map(function (k) {
-      return '<option value="' + escapeHtml(k) + '">' + escapeHtml(state.providers[k].label) + '</option>';
-    }).join("");
-  }
-
-  function renderKeyFilter() {
-    var cur = state.keyFilter || "all";
-    var html = '<option value="all">Toutes</option><option value="">Aucune clé</option>';
-    state.apiKeys.forEach(function (k) { html += '<option value="' + escapeHtml(k.id) + '">' + escapeHtml(k.name) + '</option>'; });
-    el.keyFilter.innerHTML = html;
-    el.keyFilter.value = cur;
   }
 
   function renderDoctorKeyOptions() {
@@ -2037,31 +1985,11 @@ export const ADMIN_JS = `(function () {
     '</div>';
   }
 
-  function renderKeys() {
-    if (state.loading.doctors) {
-      el.keyCount.textContent = "…";
-      el.keyRows.innerHTML = skeletonTable(["Clé", "Statut", "Modèle", "Assignée", ""], 3);
-      return;
-    }
-    el.keyCount.textContent = state.apiKeys.length;
-    if (!state.apiKeys.length) { el.keyRows.innerHTML = '<div class="empty">Aucune clé API.</div>'; return; }
-    var rows = state.apiKeys.map(function (k) {
-      return '<tr><td><div class="cell-title">' + escapeHtml(k.name) + '</div><div class="cell-sub">' + escapeHtml(k.id) + '</div></td>' +
-        '<td>' + badge("blue", k.provider_label) + (k.active ? badge("green","Active") : badge("red","Inactive")) + '</td>' +
-        '<td><div class="cell-sub">' + escapeHtml(k.model) + '</div>' + (k.has_key ? badge("violet","Secret OK") : badge("amber","Sans secret")) + '</td>' +
-        '<td>' + escapeHtml(k.assigned_count || 0) + ' médecin(s)</td>' +
-        '<td class="row-actions"><button class="btn ghost" type="button" data-action="edit-key" data-id="' + escapeHtml(k.id) + '">Modifier</button>' +
-        '<button class="btn danger" type="button" data-action="delete-key" data-id="' + escapeHtml(k.id) + '">Supprimer</button></td></tr>';
-    }).join("");
-    el.keyRows.innerHTML = '<table class="data-table"><thead><tr><th>Clé</th><th>Statut</th><th>Modèle</th><th>Assignée</th><th></th></tr></thead><tbody>' + rows + '</tbody></table>';
-  }
-
   function filteredDoctors() {
     var q = state.query.trim().toLowerCase();
     return state.rows.filter(function (r) {
-      var keyOk = state.keyFilter === "all" || r.assigned_api_key_id === state.keyFilter;
-      var hay = [r.name, r.email, r.doctor_id, r.assigned_api_key_name].join(" ").toLowerCase();
-      return keyOk && (!q || hay.indexOf(q) !== -1);
+      var hay = [r.name, r.email, r.doctor_id].join(" ").toLowerCase();
+      return !q || hay.indexOf(q) !== -1;
     });
   }
 
@@ -2183,7 +2111,6 @@ export const ADMIN_JS = `(function () {
     el.licenseRows.innerHTML = '<table class="data-table"><thead><tr><th>Clé</th><th>Type</th><th>Médecin</th><th>Dates</th><th></th></tr></thead><tbody>' + html + '</tbody></table>';
   }
 
-  function findKey(id) { return state.apiKeys.find(function (k) { return k.id === id; }); }
   function findDoctor(id) { return state.rows.find(function (r) { return r.doctor_id === id; }); }
   function findRegistration(id) { return state.registrations.find(function (r) { return r.id === id; }); }
 
@@ -2325,7 +2252,7 @@ export const ADMIN_JS = `(function () {
     }
     var rows = filteredDemandes();
     el.demandeCount.textContent = rows.length;
-    if (!rows.length) { el.demandeRows.innerHTML = '<div class="empty">Aucune demande d\\'installation pour le moment.</div>'; return; }
+    if (!rows.length) { el.demandeRows.innerHTML = '<div class="empty">Aucune demande d\'installation pour le moment.</div>'; return; }
     var seenAt = state.demandesSeenAt || "";
     var html = rows.map(function (r) {
       var stCls = r.status === "contacted" ? "green" : r.status === "archived" ? "red" : "amber";
@@ -2551,7 +2478,6 @@ export const ADMIN_JS = `(function () {
   }
 
   function createCloudDoctor(id) { openCloudDoctorDialog(id); }
-  function defaultModel(p) { return state.providers[p] ? state.providers[p].default_model : ""; }
 
   function openLicenseDialog(regId) {
     el.licenseForm.reset();
@@ -2686,22 +2612,6 @@ export const ADMIN_JS = `(function () {
     finally { setBusy(btn, false); }
   }
 
-  function openKeyDialog(key) {
-    state.editingKeyId = key ? key.id : "";
-    el.keyForm.reset();
-    el.keyDialogMode.textContent = key ? "Modifier" : "Créer";
-    el.keyDialogTitle.textContent = key ? key.name : "Clé API";
-    el.keyId.value = key ? key.id : "";
-    el.keyName.value = key ? key.name : "";
-    el.keyProvider.value = key ? key.provider : "groq";
-    el.keyModel.value = key ? key.model : defaultModel(el.keyProvider.value);
-    el.keySecret.value = "";
-    el.keySecret.required = !key;
-    el.keyActive.checked = key ? !!key.active : true;
-    el.clearKeyWrap.classList.toggle("hidden", !key);
-    el.keyDialog.showModal();
-  }
-
   function openDoctorDialog(row) {
     state.editingDoctorId = row ? row.doctor_id : "";
     el.doctorForm.reset();
@@ -2716,18 +2626,6 @@ export const ADMIN_JS = `(function () {
     el.doctorAiEnabled.checked = row ? !!row.ai_enabled : false;
     el.doctorUsageTools.classList.toggle("hidden", !row);
     el.doctorDialog.showModal();
-  }
-
-  async function saveKey(e) {
-    e.preventDefault(); var btn = el.keyForm.querySelector('button[type="submit"]'); setBusy(btn, true);
-    try {
-      var body = { name: el.keyName.value.trim(), provider: el.keyProvider.value, model: el.keyModel.value.trim(), active: el.keyActive.checked };
-      if (el.keySecret.value.trim()) body.api_key = el.keySecret.value.trim();
-      if (state.editingKeyId && el.clearKeySecret.checked) body.clear_api_key = true;
-      if (state.editingKeyId) await apiFetch("/api/admin/api-keys/" + encodeURIComponent(state.editingKeyId), { method: "PATCH", body: body });
-      else await apiFetch("/api/admin/api-keys", { method: "POST", body: body });
-      el.keyDialog.close(); showToast("Clé API enregistrée"); refreshData();
-    } catch (err) { showToast(err.message, true); } finally { setBusy(btn, false); }
   }
 
   async function saveDoctor(e) {
@@ -2828,12 +2726,6 @@ export const ADMIN_JS = `(function () {
   async function rowAction(btn, confirmMsg, request, successMsg) {
     if (confirmMsg && !confirm(confirmMsg)) return;
     if (await runAction(btn, request, successMsg)) refreshData();
-  }
-
-  function deleteKey(id, btn) {
-    rowAction(btn, "Supprimer cette clé API ?", function () {
-      return apiFetch("/api/admin/api-keys/" + encodeURIComponent(id), { method: "DELETE" });
-    }, "Clé supprimée");
   }
 
   function deleteDoctor(id, btn) {
@@ -2960,20 +2852,17 @@ export const ADMIN_JS = `(function () {
       if (!(state.releases || []).length) { showToast("Importez d'abord depuis GitHub", true); return; }
       openReleaseDialog(state.releases[0]);
     });
-    el.newKeyButton.addEventListener("click", function () { openKeyDialog(null); });
     el.newDoctorButton.addEventListener("click", function () { openDoctorDialog(null); });
     el.licenseForm.addEventListener("submit", saveLicense);
     el.licenseEditForm.addEventListener("submit", saveLicenseEdit);
     el.releaseForm.addEventListener("submit", saveRelease);
     el.entitlementForm.addEventListener("submit", saveEntitlement);
-    el.keyForm.addEventListener("submit", saveKey);
     el.doctorForm.addEventListener("submit", saveDoctor);
     el.regEditSubmit.addEventListener("click", submitRegEdit);
     el.cloudDoctorSubmit.addEventListener("click", function () { submitCloudDoctor(false); });
     el.cloudDoctorSkip.addEventListener("click", function () { submitCloudDoctor(true); });
     el.licenseType.addEventListener("change", syncTrialDays);
     el.licenseEditType.addEventListener("change", syncEditTrialDays);
-    el.keyProvider.addEventListener("change", function () { if (!state.editingKeyId) el.keyModel.value = defaultModel(el.keyProvider.value); });
     el.regSearchInput.addEventListener("input", function () { state.regQuery = el.regSearchInput.value; renderRegistrations(); });
     el.regStatusFilter.addEventListener("change", function () { state.regStatusFilter = el.regStatusFilter.value; renderRegistrations(); });
     el.licenseSearchInput.addEventListener("input", function () { state.licenseQuery = el.licenseSearchInput.value; renderLicenses(); });
@@ -2981,7 +2870,6 @@ export const ADMIN_JS = `(function () {
     el.demandeSearchInput.addEventListener("input", function () { state.demandeQuery = el.demandeSearchInput.value; renderDemandes(); });
     el.demandeStatusFilter.addEventListener("change", function () { state.demandeStatusFilter = el.demandeStatusFilter.value; renderDemandes(); });
     el.searchInput.addEventListener("input", function () { state.query = el.searchInput.value; renderDoctors(); });
-    el.keyFilter.addEventListener("change", function () { state.keyFilter = el.keyFilter.value; renderDoctors(); });
     el.regRows.addEventListener("click", function (e) {
       var btn = e.target.closest("button[data-action]");
       if (!btn || btn.__busy) return;
@@ -3015,7 +2903,6 @@ export const ADMIN_JS = `(function () {
       openLicenseEmailDialog(state.pendingLicenseEmailId, state.pendingLicenseEmail);
     });
     el.licenseEmailForm.addEventListener("submit", sendLicenseEmail);
-    el.keyRows.addEventListener("click", function (e) { handleTableClick(e, { "edit-key": function (id) { openKeyDialog(findKey(id)); }, "delete-key": deleteKey }); });
     el.doctorRows.addEventListener("click", function (e) { handleTableClick(e, { "edit-doctor": function (id) { openDoctorDialog(findDoctor(id)); }, "ai-config-doctor": function (id) { openAiDoctorConfigDialog(findDoctor(id)); }, "logs": openLogs, "delete-doctor": deleteDoctor }); });
     el.aiDoctorConfigForm.addEventListener("submit", saveAiDoctorConfig);
     document.addEventListener("click", function (e) {
@@ -3033,14 +2920,13 @@ export const ADMIN_JS = `(function () {
      "demandeBadge","demandeSearchInput","demandeStatusFilter","demandeCount","demandeRows",
      "licenseSearchInput","licenseStatusFilter","licenseCount","licenseRows","newLicenseButtonAlt",
      "newReleaseButton","importGithubReleaseButton","releaseCount","releaseRows","telemetryCount","telemetryRows",
-     "newKeyButton","newDoctorButton","keyCount","keyRows","searchInput","keyFilter","doctorCount","doctorRows",
+     "newDoctorButton","searchInput","doctorCount","doctorRows",
      "licenseDialog","licenseForm","licenseRegistration","licenseType","trialDaysWrap","licenseTrialDays","licenseNote",
      "licenseEditDialog","licenseEditForm","licenseEditId","licenseEditSerial","licenseEditStatus","licenseEditExpires","licenseEditRegistration","licenseEditType","licenseEditTrialWrap","licenseEditTrialDays","licenseEditNote",
      "releaseDialog","releaseForm","releaseDialogMode","releaseDialogTitle","releaseId","releaseVersion","releaseChannel","releaseSeverity","releaseSku","releaseRollout","releaseStatus","releaseNotes","releaseArtifactUrl","releaseArtifactSignature","releaseMigrationRisk",
      "entitlementDialog","entitlementForm","entitlementRegId","entitlementRegLabel","entitlementSku","entitlementChannel","entitlementNote",
      "serialDialog","generatedSerialKey","generatedSerialMeta","serialSendEmailButton",
      "licenseEmailDialog","licenseEmailForm","licenseEmailKeyMeta","licenseEmailAddress",
-     "keyDialog","keyForm","keyDialogMode","keyDialogTitle","keyId","keyName","keyProvider","keyModel","keySecret","keyActive","clearKeyWrap","clearKeySecret",
      "doctorDialog","doctorForm","doctorDialogMode","doctorDialogTitle","doctorId","doctorEmail","doctorAssignedKey","doctorMonthlyLimit","doctorDailyLimit","doctorActive","doctorAiEnabled","doctorUsageTools","setMonthlyUsed","setDailyUsed","resetMonthly","resetDaily",
      "aiDoctorConfigDialog","aiDoctorConfigForm","aiDoctorConfigId","aiDoctorConfigTitle","aiDoctorConfigEnabled","aiDoctorConfigPlan","aiDoctorConfigLanguage","aiDoctorConfigMonthly","aiDoctorConfigDaily","aiDoctorConfigSpecialties","aiDoctorConfigModels","aiDoctorConfigFlags",
      "regEditDialog","regEditName","regEditMeta","regEditInfo","regEditSpecialty","regEditForcedVersion","regEditSubmit",
