@@ -33,7 +33,7 @@ import {
   handleInstallRequestPublicRoutes,
   handleInstallRequestAdminRoutes,
 } from "./install-requests.js";
-import { handleAiModelsAdminRoutes } from "./ai-models.js";
+import { handleAiModelsAdminRoutes, keepOnlyConnectorModelsEnabled } from "./ai-models.js";
 import { handleAiConnectorsAdminRoutes } from "./ai-connectors.js";
 import { handleAiPromptsAdminRoutes } from "./ai-prompts.js";
 import { handleAiCatalogAdminRoutes } from "./ai-catalog.js";
@@ -319,6 +319,38 @@ async function listDoctors() {
     await persistMigrated(rows, saveDoctor);
     return rows.map((r) => r.row).sort((a, b) => (a.email || "").localeCompare(b.email || ""));
   });
+}
+
+// One-time migration: an admin who only ever configures OpenRouter (no
+// Gemini/Anthropic/OpenAI/Groq key) shouldn't have to separately flip
+// ai_enabled + pick an AI Plan per doctor, nor manually disable every
+// other provider's seeded models one by one in the catalog. See
+// provisionCloudAiDoctor in licensing.js for the same defaults applied
+// to NEW accounts going forward (Professional plan, ai_enabled: true);
+// this backfills every EXISTING doctor once, the next time the admin
+// panel loads. Guarded by a Redis marker so repeat health-check polls
+// after the first are a single cheap GET, not a full doctor-list rewrite.
+async function runAiOpenRouterMigrationOnce() {
+  const marker = "migration:ai_openrouter_only_v1";
+  const already = await redis.get(marker);
+  if (already) return already;
+  const plans = (await listPlans()).filter((p) => p.active !== false);
+  const professional = plans.find((p) => /professional/i.test(p.name || "")) || plans[0];
+  const doctors = await listDoctors();
+  let doctorsUpdated = 0;
+  for (const doctor of doctors) {
+    // Never resurrect AI access for an account an admin deliberately
+    // deactivated -- "all accounts" means all live ones.
+    if (doctor.active === false) continue;
+    let changed = false;
+    if (!doctor.ai_enabled) { doctor.ai_enabled = true; changed = true; }
+    if (!doctor.ai_plan_id && professional?.id) { doctor.ai_plan_id = professional.id; changed = true; }
+    if (changed) { await saveDoctor(doctor); doctorsUpdated++; }
+  }
+  const { updated: modelsDisabled } = await keepOnlyConnectorModelsEnabled("OpenRouter");
+  const result = { ran_at: nowIso(), doctors_updated: doctorsUpdated, models_disabled: modelsDisabled };
+  await redis.set(marker, result);
+  return result;
 }
 
 function displayNameFromEmail(email) {
@@ -769,12 +801,14 @@ async function handleRequest(req, res) {
       }
 
       if (path === "/api/admin/health") {
+        const aiOpenrouterMigration = await runAiOpenRouterMigrationOnce();
         return ok(res, {
           ok: true,
           doctors: (await listDoctorIds()).length,
           api_keys: (await listApiKeyIds()).length,
           providers: providerConfig(),
           admin: session.username,
+          ai_openrouter_migration: aiOpenrouterMigration,
         });
       }
 

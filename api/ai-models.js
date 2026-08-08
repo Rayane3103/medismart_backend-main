@@ -79,6 +79,28 @@ export async function seedModelDefaults() {
   })));
 }
 
+// Retroactive version of SEED_MODELS' enabled:false defaults above --
+// those only apply to a fresh, empty model store. A deployment that
+// already had Claude/Gemini/GPT-4o/Groq models enabled before that
+// change needs them disabled where they already exist, not just where
+// they'd be freshly created. Used by index.js's one-time OpenRouter-only
+// migration (runAiOpenRouterMigrationOnce).
+export async function keepOnlyConnectorModelsEnabled(connectorName) {
+  const connectors = await listConnectors();
+  const keepId = connectors.find((c) => c.name === connectorName)?.id;
+  if (!keepId) return { updated: 0 };
+  const rows = await modelStore.list();
+  let updated = 0;
+  for (const row of rows) {
+    if (row.connector_id !== keepId && row.enabled) {
+      row.enabled = false;
+      await modelStore.save(row);
+      updated++;
+    }
+  }
+  return { updated };
+}
+
 export async function getModel(id) { return modelStore.get(id); }
 export async function listModels() { return modelStore.list(); }
 export async function listEnabledModels() {
