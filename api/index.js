@@ -331,7 +331,10 @@ async function listDoctors() {
 // panel loads. Guarded by a Redis marker so repeat health-check polls
 // after the first are a single cheap GET, not a full doctor-list rewrite.
 async function runAiOpenRouterMigrationOnce() {
-  const marker = "migration:ai_openrouter_only_v1";
+  // v2: also clears assigned_api_key_id (see below) -- bumped so this
+  // reruns even on a deploy where v1 already fired, rather than trusting
+  // a stale marker to mean "nothing left to do".
+  const marker = "migration:ai_openrouter_only_v2";
   const already = await redis.get(marker);
   if (already) return already;
   const plans = (await listPlans()).filter((p) => p.active !== false);
@@ -345,6 +348,15 @@ async function runAiOpenRouterMigrationOnce() {
     let changed = false;
     if (!doctor.ai_enabled) { doctor.ai_enabled = true; changed = true; }
     if (!doctor.ai_plan_id && professional?.id) { doctor.ai_plan_id = professional.id; changed = true; }
+    // Legacy named-key assignment (Groq/Gemini, predates the AI
+    // Management system) is never read by the real completion path
+    // (ai-brain.js resolves everything through ai_plan_id -> connectors/
+    // models now) -- the only thing it still does is leave a stale
+    // provider/model name showing on the doctor's own "IA & limites"
+    // page ("gemini1 / gemini-2.5-flash"), which a doctor has no reason
+    // to see or way to act on. Clear it so nothing legacy is left to
+    // display.
+    if (doctor.assigned_api_key_id) { doctor.assigned_api_key_id = ""; changed = true; }
     if (changed) { await saveDoctor(doctor); doctorsUpdated++; }
   }
   const { updated: modelsDisabled } = await keepOnlyConnectorModelsEnabled("OpenRouter");
@@ -461,7 +473,20 @@ async function publicDoctorWithAssignedKey(doctor) {
     getApiKey(doctor.assigned_api_key_id),
     doctor.ai_plan_id ? getPlan(doctor.ai_plan_id) : null,
   ]);
-  return publicDoctorState(doctor, apiKey, aiPlan);
+  const state = publicDoctorState(doctor, apiKey, aiPlan);
+  // A doctor has no reason to see, and no way to act on, which
+  // third-party LLM vendor/model actually powers their AI features --
+  // that's purely an admin configuration concern. adminDoctorState()
+  // still gets the real provider_label/model straight from
+  // publicDoctorState() for the admin's own panel; only this
+  // doctor-facing path gets the neutral MediSmart AI branding instead.
+  return {
+    ...state,
+    assigned_api_key_name: state.assigned_api_key_name ? "MediSmart AI" : "",
+    ai_provider: "",
+    ai_provider_label: state.ai_enabled ? "MediSmart AI" : "",
+    ai_model: "",
+  };
 }
 
 async function adminDoctorWithAssignedKey(doctor) {
