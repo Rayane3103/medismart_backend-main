@@ -73,7 +73,7 @@ export const ADMIN_HTML = `<!doctype html>
         </button>
         <button type="button" class="nav-item" data-view="plans">
           <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>
-          <span>Plans</span>
+          <span>Abonnements</span>
         </button>
         <button type="button" class="nav-item" data-view="ai">
           <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a4 4 0 0 1 4 4c0 1.95-1.4 3.58-3.25 3.93L12 22l-.75-12.07A4.001 4.001 0 0 1 12 2z"/><path d="M8 6H4a2 2 0 0 0-2 2v1"/><path d="M16 6h4a2 2 0 0 1 2 2v1"/></svg>
@@ -875,7 +875,7 @@ export const ADMIN_JS = `(function () {
       { key: "enabled", label: "Activé", type: "checkbox" },
       { key: "rollout_pct", label: "Rollout %", type: "number", default: 100 }
     ] },
-    plans: { base: "/api/admin/ai/plans", label: "AI Plan", columns: ["name", "monthly_limit", "daily_limit", "rate_limit_per_min", "active"], fields: [
+    plans: { base: "/api/admin/ai/plans", label: "Quota IA", columns: ["name", "monthly_limit", "daily_limit", "rate_limit_per_min", "active"], fields: [
       { key: "name", label: "Nom", required: true },
       { key: "description", label: "Description" },
       { key: "monthly_limit", label: "Limite mensuelle", type: "number", default: 500 },
@@ -912,7 +912,7 @@ export const ADMIN_JS = `(function () {
     // NOT part of the "Gestion IA" subnav despite living in this same generic-CRUD
     // config object; renderAiGenericTable/openAiGenericDialog/etc. are entity-key-
     // generic and don't care which top-level view invokes them (see renderPlansView).
-    account_plans: { base: "/api/admin/account-plans", label: "Plan", columns: ["name", "price", "currency", "duration_days", "active"], fields: [
+    account_plans: { base: "/api/admin/account-plans", label: "Abonnement", columns: ["name", "price", "currency", "duration_days", "active"], fields: [
       { key: "name", label: "Nom", required: true },
       { key: "description", label: "Description", type: "textarea" },
       { key: "price", label: "Prix", type: "number", step: "0.01", default: 0 },
@@ -926,7 +926,7 @@ export const ADMIN_JS = `(function () {
   var AI_SUBVIEW_LABELS = {
     dashboard: "Tableau de bord", connectors: "Connecteurs", models: "Modèles", prompts: "Prompt Library", specialties: "Spécialités",
     tasks: "Tâches cliniques", guidelines: "Guidelines", router: "Model Router", flags: "Feature Flags",
-    plans: "AI Plans", keys: "Clés API", usage: "Usage", costs: "Coûts", logs: "Logs", audit: "Audit",
+    plans: "Quotas IA", keys: "Clés API", usage: "Usage", costs: "Coûts", logs: "Logs", audit: "Audit",
     settings: "AI Settings", playground: "Testing Playground"
   };
 
@@ -2105,7 +2105,7 @@ export const ADMIN_JS = `(function () {
   function renderRegistrations() {
     if (state.loading.registrations) {
       el.regCount.textContent = "…";
-      el.regRows.innerHTML = skeletonTable(["Médecin", "Contact", "Plan", "Licence", "Updates", ""], 5);
+      el.regRows.innerHTML = skeletonTable(["Médecin", "Contact", "Abonnement", "Licence", "Updates", ""], 5);
       return;
     }
     var rows = filteredRegistrations();
@@ -2131,7 +2131,7 @@ export const ADMIN_JS = `(function () {
           '<button class="btn danger" type="button" data-action="reg-delete" data-id="' + escapeHtml(r.id) + '">Supprimer</button>' +
         '</td></tr>';
     }).join("");
-    el.regRows.innerHTML = '<table class="data-table"><thead><tr><th>Médecin</th><th>Contact</th><th>Plan</th><th>Licence</th><th>Updates</th><th></th></tr></thead><tbody>' + html + '</tbody></table>';
+    el.regRows.innerHTML = '<table class="data-table"><thead><tr><th>Médecin</th><th>Contact</th><th>Abonnement</th><th>Licence</th><th>Updates</th><th></th></tr></thead><tbody>' + html + '</tbody></table>';
   }
 
   function filteredLicenses() {
@@ -2197,7 +2197,7 @@ export const ADMIN_JS = `(function () {
     var statusLabel = reg.status === "activated" ? REG_STATUS.activated : REG_STATUS.pending_activation;
     el.regEditInfo.innerHTML = [
       ["Statut", statusLabel],
-      ["Plan choisi", reg.requested_plan_name || "—"],
+      ["Abonnement choisi", reg.requested_plan_name || "—"],
       ["Email", reg.email || "—"],
       ["Téléphone", reg.phone || "—"],
       ["Cabinet", reg.clinic_name || "—"],
