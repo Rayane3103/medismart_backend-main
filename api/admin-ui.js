@@ -892,14 +892,14 @@ export const ADMIN_JS = `(function () {
     ] }
   };
 
-  // Trimmed to the bare minimum an OpenRouter-only setup needs day to day
-  // (connect the provider, pick models, set quotas/routing) -- Prompts,
-  // Specialties, Tasks, Guidelines, Flags, Usage, Costs, Logs, Audit,
-  // Playground and the AI dashboard stayed too complex/rarely-touched for
-  // daily admin use. Their routes/renderers/data are untouched, just not
-  // reachable from this sub-nav -- add the key back to AI_SUBVIEWS to
-  // resurface a tab.
-  var AI_SUBVIEWS = ["connectors", "models", "keys", "plans", "router", "settings"];
+  // Trimmed down from all 17 sub-screens; Guidelines, Feature Flags,
+  // Usage, Costs, Logs and Audit stayed hidden (safety text/kill-switch
+  // and pure observability, rarely touched day to day) -- Prompts,
+  // Specialties, Tasks, Playground and the AI dashboard were requested
+  // back. Every hidden screen's routes/renderers/data are untouched, just
+  // not reachable from this sub-nav -- add the key back to AI_SUBVIEWS to
+  // resurface one.
+  var AI_SUBVIEWS = ["dashboard", "connectors", "models", "prompts", "specialties", "tasks", "router", "plans", "keys", "settings", "playground"];
   var AI_SUBVIEW_LABELS = {
     dashboard: "Tableau de bord", connectors: "Connecteurs", models: "Modèles", prompts: "Prompt Library", specialties: "Spécialités",
     tasks: "Tâches cliniques", guidelines: "Guidelines", router: "Model Router", flags: "Feature Flags",
@@ -907,7 +907,7 @@ export const ADMIN_JS = `(function () {
     settings: "AI Settings", playground: "Testing Playground"
   };
 
-  var aiState = { initialized: false, view: "connectors", loaded: {}, editingEntity: "", editingId: "", detailPromptId: "",
+  var aiState = { initialized: false, view: "dashboard", loaded: {}, editingEntity: "", editingId: "", detailPromptId: "",
     specialties: [], tasks: [], guidelines: [], flags: [], plans: [], models: [], keys: [], prompts: [], connectors: [], account_plans: [] };
 
   // Guidelines store multilingual summary as an object ({fr,en,ar}) and
@@ -1743,7 +1743,7 @@ export const ADMIN_JS = `(function () {
     });
     // Opening the demands tab clears the "unseen" badge.
     if (view === "demandes" && state.demandeUnseen > 0) markDemandesSeen();
-    if (view === "ai-management" && !aiState.initialized) { aiState.initialized = true; setAiView(aiState.view || "connectors"); }
+    if (view === "ai-management" && !aiState.initialized) { aiState.initialized = true; setAiView(aiState.view || "dashboard"); }
     if (view === "plans") renderPlansView();
   }
 
