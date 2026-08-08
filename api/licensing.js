@@ -15,6 +15,33 @@ import { redis, mgetExisting, cached, invalidate } from "./redis.js";
 import { sendEmail, emailConfigured, licenseEmailTemplate } from "./email.js";
 import { logAiAudit } from "./ai-audit.js";
 
+// Kills a doctor's live web sessions the moment an admin revokes their
+// license -- check_license_still_valid() on web-full already blocks their
+// NEXT login, but does nothing about a session they're already holding.
+// "Revoked" must mean locked out now, not next time they happen to log
+// back in. Best-effort: web-full being unreachable must never block the
+// revoke itself, and INTERNAL_REVOKE_SECRET is optional -- unset just
+// means this immediate-kill step is skipped (still-existing sessions
+// expire naturally, and login is already blocked either way).
+async function revokeWebSessions(registration) {
+  const secret = String(process.env.INTERNAL_REVOKE_SECRET || "").trim();
+  const base = String(process.env.WEB_FULL_BASE_URL || "https://app.medismart.software").replace(/\/+$/, "");
+  if (!secret || !registration) return;
+  const client_registration_id = registration.client_registration_id || "";
+  const email = registration.email || "";
+  if (!client_registration_id && !email) return;
+  try {
+    await fetch(`${base}/api/internal/revoke-sessions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Internal-Secret": secret },
+      body: JSON.stringify({ client_registration_id, email }),
+      signal: AbortSignal.timeout(8000),
+    });
+  } catch {
+    // best-effort -- see comment above
+  }
+}
+
 export const LICENSE_TYPES = ["trial", "lifetime"];
 export const LICENSE_STATUSES = ["generated", "used", "revoked"];
 export const REGISTRATION_STATUSES = ["pending_activation", "activated"];
@@ -685,6 +712,7 @@ export async function handleLicensingAdminRoutes(req, res, path, ctx) {
         await saveLicense(license);
       }
     }
+    await revokeWebSessions(reg);
     if (reg?.client_registration_id) {
       await redis.del(`registration:client:${reg.client_registration_id}`);
     }
@@ -785,6 +813,9 @@ export async function handleLicensingAdminRoutes(req, res, path, ctx) {
     license.revoked_at = nowIso();
     await saveLicense(license);
     await logAiAudit(session, "revoke", "license", license.id, { key_hint: license.key_hint || "" });
+    if (license.registration_id) {
+      await revokeWebSessions(await getRegistration(license.registration_id));
+    }
     ok(res, { ok: true, license: adminLicenseState(license) });
     return true;
   }
