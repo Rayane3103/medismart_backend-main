@@ -13,6 +13,7 @@
 import crypto from "node:crypto";
 import { redis, mgetExisting, cached, invalidate } from "./redis.js";
 import { sendEmail, emailConfigured, licenseEmailTemplate } from "./email.js";
+import { logAiAudit } from "./ai-audit.js";
 
 export const LICENSE_TYPES = ["trial", "lifetime"];
 export const LICENSE_STATUSES = ["generated", "used", "revoked"];
@@ -131,6 +132,13 @@ export function ensureRegistrationDefaults(reg) {
   // api/updates.js) instead of waiting for a global rollout.
   reg.specialty_locked = Boolean(reg.specialty_locked);
   reg.forced_min_version = cleanStr(reg.forced_min_version, 40);
+  // Plan a doctor picked on the web registration's plan-selection step
+  // (medismart-web-full's AuthGate.jsx -> POST /api/registrations/sync).
+  // Purely informational for whoever reviews the registration -- see
+  // api/account-plans.js's module docstring; has no automatic effect
+  // (no billing, no auto-issued key).
+  reg.requested_plan_id = cleanStr(reg.requested_plan_id, 100);
+  reg.requested_plan_name = cleanStr(reg.requested_plan_name, 100);
   if (!reg.synced_at) reg.synced_at = nowIso();
   if (!reg.created_at) reg.created_at = nowIso();
   return reg;
@@ -407,7 +415,8 @@ async function buildActivationResponse(license, registration) {
 // Merge fields sent by the desktop app into a registration record.
 function applyRegistrationFields(reg, body) {
   const fields = ["full_name", "specialty", "phone", "email", "clinic_name",
-    "address", "wilaya", "device_fingerprint", "app_version", "registered_at"];
+    "address", "wilaya", "device_fingerprint", "app_version", "registered_at",
+    "requested_plan_id", "requested_plan_name"];
   for (const field of fields) {
     if (field === "specialty" && reg.specialty_locked) continue; // admin-corrected, desktop can't clobber it
     if (body[field] !== undefined && cleanStr(body[field])) reg[field] = body[field];
@@ -573,7 +582,7 @@ export async function handleLicensingPublicRoutes(req, res, path, ctx) {
 }
 
 export async function handleLicensingAdminRoutes(req, res, path, ctx) {
-  const { readJson, ok, err } = ctx;
+  const { readJson, ok, err, session } = ctx;
 
   if (path === "/api/admin/stats" && req.method === "GET") {
     ok(res, { stats: await licensingStats() });
@@ -615,6 +624,7 @@ export async function handleLicensingAdminRoutes(req, res, path, ctx) {
     // version's normal channel/rollout to reach them.
     if (body.forced_min_version !== undefined) fresh.forced_min_version = cleanStr(body.forced_min_version, 40);
     await saveRegistration(fresh);
+    await logAiAudit(session, "update", "registration", fresh.id, { fields: Object.keys(body) });
     ok(res, { registration: publicRegistrationState(fresh) });
     return true;
   }
@@ -627,6 +637,7 @@ export async function handleLicensingAdminRoutes(req, res, path, ctx) {
     await redis.del(`registration:${regMatch[1]}`);
     await redis.srem("registrations:index", regMatch[1]);
     invalidate("registrations");
+    await logAiAudit(session, "delete", "registration", regMatch[1], { full_name: reg?.full_name || "" });
     ok(res, { ok: true });
     return true;
   }
@@ -685,6 +696,10 @@ export async function handleLicensingAdminRoutes(req, res, path, ctx) {
     });
     await saveLicense(license);
     await redis.sadd("licenses:index", license.id);
+    await logAiAudit(session, "generate_key", "license", license.id, {
+      license_type: licenseType,
+      registration_id: registration ? registration.id : null,
+    });
 
     ok(res, {
       ok: true,
@@ -702,6 +717,7 @@ export async function handleLicensingAdminRoutes(req, res, path, ctx) {
       err(res, result.status || 400, result.error);
       return true;
     }
+    await logAiAudit(session, "update", "license", licensePatchMatch[1], { fields: Object.keys(body) });
     ok(res, { ok: true, license: result.license });
     return true;
   }
@@ -714,6 +730,7 @@ export async function handleLicensingAdminRoutes(req, res, path, ctx) {
     license.status = "revoked";
     license.revoked_at = nowIso();
     await saveLicense(license);
+    await logAiAudit(session, "revoke", "license", license.id, { key_hint: license.key_hint || "" });
     ok(res, { ok: true, license: adminLicenseState(license) });
     return true;
   }
@@ -755,6 +772,7 @@ export async function handleLicensingAdminRoutes(req, res, path, ctx) {
       err(res, 502, e.message || "Envoi de l'email impossible.");
       return true;
     }
+    await logAiAudit(session, "send_email", "license", license.id, { sent_to: to });
     ok(res, { ok: true, sent_to: to });
     return true;
   }
@@ -771,6 +789,7 @@ export async function handleLicensingAdminRoutes(req, res, path, ctx) {
     await redis.del(`license:${license.id}`);
     await redis.srem("licenses:index", license.id);
     invalidate("licenses");
+    await logAiAudit(session, "delete", "license", license.id, { key_hint: license.key_hint || "" });
     ok(res, { ok: true });
     return true;
   }

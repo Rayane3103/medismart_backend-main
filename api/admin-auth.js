@@ -7,6 +7,22 @@ import { redis } from "./redis.js";
 
 const SESSION_TTL_SEC = 60 * 60 * 24 * 7; // 7 days
 
+// Login brute-force lockout: N failed attempts from one IP against one
+// username within the window trips a temporary block. Keyed by IP (not just
+// username) so one attacker can't lock out the real admin from a different
+// IP -- it only throttles the attacker's own source.
+const LOGIN_MAX_ATTEMPTS = 8;
+const LOGIN_WINDOW_SEC = 15 * 60;
+
+function clientIp(req) {
+  const fwd = String(req.headers["x-forwarded-for"] || "").split(",")[0].trim();
+  return fwd || req.socket?.remoteAddress || "unknown";
+}
+
+async function loginAttemptsKey(req, username) {
+  return `admin:login:fail:${clientIp(req)}:${String(username || "").trim().toLowerCase()}`;
+}
+
 function parseAdminUsers() {
   const raw = String(process.env.ADMIN_USERS || "").trim();
   const map = new Map();
@@ -36,7 +52,7 @@ function secretsMatch(a, b) {
   return crypto.timingSafeEqual(ha, hb);
 }
 
-export async function adminLogin(username, password) {
+export async function adminLogin(req, username, password) {
   const users = parseAdminUsers();
   const user = String(username || "").trim().toLowerCase();
   const pass = String(password || "");
@@ -46,10 +62,21 @@ export async function adminLogin(username, password) {
   if (!users.size) {
     return { ok: false, error: "Aucun compte administrateur configuré (ADMIN_USERS)." };
   }
+
+  const attemptsKey = await loginAttemptsKey(req, user);
+  const attempts = Number(await redis.get(attemptsKey)) || 0;
+  if (attempts >= LOGIN_MAX_ATTEMPTS) {
+    return { ok: false, error: "Trop de tentatives échouées. Réessayez dans quelques minutes.", locked: true };
+  }
+
   const expected = users.get(user);
   if (!expected || !secretsMatch(expected, pass)) {
+    const next = await redis.incr(attemptsKey);
+    if (next === 1) await redis.expire(attemptsKey, LOGIN_WINDOW_SEC);
     return { ok: false, error: "Identifiants incorrects." };
   }
+
+  await redis.del(attemptsKey);
   const token = crypto.randomBytes(32).toString("hex");
   const session = {
     username: user,

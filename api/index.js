@@ -47,6 +47,7 @@ import { handleAiSettingsAdminRoutes } from "./ai-settings.js";
 import { handleAiAuditAdminRoutes } from "./ai-audit.js";
 import { handleAiBrainRoutes, handleAiPlaygroundRoute, handleAiFeedbackRoute } from "./ai-brain.js";
 import { getCreditCosts, readLogs } from "./doctor-usage.js";
+import { handleAccountPlansPublicRoutes, handleAccountPlansAdminRoutes } from "./account-plans.js";
 
 const CLOUD_NOT_PROVISIONED_MSG =
   "L'accès IA n'est pas encore activé. Contactez votre administrateur MediSmart.";
@@ -517,6 +518,11 @@ async function handleRequest(req, res) {
       return ok(res, { plans: COMPAT_PLANS, credit_costs: await getCreditCosts(), providers: providerConfig(), default_limits: DEFAULT_LIMITS });
     }
 
+    // ---- account/subscription plans shown on the web registration's plan-selection
+    // step (medismart-web-full's AuthGate.jsx) -- distinct from /api/plans above,
+    // which is the AI-usage-limits catalog (see api/account-plans.js). ----
+    if (await handleAccountPlansPublicRoutes(req, res, path, { readJson, ok, err })) return;
+
     // ---- licensing: registration sync + serial key activation (public) ----
     if (await handleLicensingPublicRoutes(req, res, path, { readJson, ok, err })) return;
 
@@ -537,8 +543,8 @@ async function handleRequest(req, res) {
     // ---- admin sign-in (public) ----
     if (path === "/api/admin/login" && req.method === "POST") {
       const body = await readJson(req);
-      const result = await adminLogin(body.username, body.password);
-      if (!result.ok) return err(res, 401, result.error);
+      const result = await adminLogin(req, body.username, body.password);
+      if (!result.ok) return err(res, result.locked ? 429 : 401, result.error);
       return ok(res, { ok: true, token: result.token, user: result.user });
     }
 
@@ -667,7 +673,10 @@ async function handleRequest(req, res) {
       }
 
       // Licensing admin routes (registrations, licenses, stats).
-      if (await handleLicensingAdminRoutes(req, res, path, { readJson, ok, err })) return;
+      if (await handleLicensingAdminRoutes(req, res, path, { readJson, ok, err, session })) return;
+
+      // Account/subscription plans CRUD (Plans tab) -- see api/account-plans.js.
+      if (await handleAccountPlansAdminRoutes(req, res, path, { readJson, ok, err, session })) return;
 
       // Update control plane (releases, entitlements, telemetry).
       if (await handleUpdatesAdminRoutes(req, res, path, {

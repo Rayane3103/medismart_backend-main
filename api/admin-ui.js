@@ -71,6 +71,10 @@ export const ADMIN_HTML = `<!doctype html>
           <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
           <span>Mises à jour</span>
         </button>
+        <button type="button" class="nav-item" data-view="plans">
+          <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6L9 17l-5-5"/></svg>
+          <span>Plans</span>
+        </button>
         <button type="button" class="nav-item" data-view="ai">
           <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a4 4 0 0 1 4 4c0 1.95-1.4 3.58-3.25 3.93L12 22l-.75-12.07A4.001 4.001 0 0 1 12 2z"/><path d="M8 6H4a2 2 0 0 0-2 2v1"/><path d="M16 6h4a2 2 0 0 1 2 2v1"/></svg>
           <span>IA &amp; Médecins</span>
@@ -212,6 +216,11 @@ export const ADMIN_HTML = `<!doctype html>
             <p class="subtle" style="padding:0 18px 8px">Versions installées remontées par les apps (sans données cliniques).</p>
             <div class="table-wrap" id="telemetryRows"></div>
           </section>
+        </div>
+
+        <div class="view hidden" id="view-plans">
+          <p class="subtle" style="padding:0 4px 12px">Plans d'abonnement proposés aux médecins lors de l'inscription sur la version web. Sans effet automatique — le choix n'est qu'une indication pour la validation de l'inscription.</p>
+          <div class="ai-content" id="plansContent"></div>
         </div>
 
         <div class="view hidden" id="view-ai">
@@ -771,6 +780,7 @@ export const ADMIN_JS = `(function () {
     demandes: { kicker: "Site web", title: "Demandes d'installation" },
     licenses: { kicker: "Licences", title: "Clés d'activation" },
     updates: { kicker: "Desktop", title: "Mises à jour" },
+    plans: { kicker: "Inscriptions", title: "Plans d'abonnement" },
     ai: { kicker: "Intelligence artificielle", title: "IA & Médecins" },
     "ai-management": { kicker: "Intelligence artificielle", title: "Gestion IA" }
   };
@@ -896,6 +906,18 @@ export const ADMIN_JS = `(function () {
       { key: "connector_id", label: "Connecteur", type: "select", dynamicOptions: "connectors" },
       { key: "api_key", label: "Secret API (laisser vide pour ne pas changer)", type: "password" },
       { key: "active", label: "Active", type: "checkbox", default: true }
+    ] },
+    // Account/subscription plans (Plans tab, top-level nav, api/account-plans.js) --
+    // NOT part of the "Gestion IA" subnav despite living in this same generic-CRUD
+    // config object; renderAiGenericTable/openAiGenericDialog/etc. are entity-key-
+    // generic and don't care which top-level view invokes them (see renderPlansView).
+    account_plans: { base: "/api/admin/account-plans", label: "Plan", columns: ["name", "price", "currency", "duration_days", "active"], fields: [
+      { key: "name", label: "Nom", required: true },
+      { key: "description", label: "Description", type: "textarea" },
+      { key: "price", label: "Prix", type: "number", step: "0.01", default: 0 },
+      { key: "currency", label: "Devise", default: "DZD" },
+      { key: "duration_days", label: "Durée (jours)", type: "number", default: 30 },
+      { key: "active", label: "Actif", type: "checkbox", default: true }
     ] }
   };
 
@@ -908,7 +930,7 @@ export const ADMIN_JS = `(function () {
   };
 
   var aiState = { initialized: false, view: "dashboard", loaded: {}, editingEntity: "", editingId: "", detailPromptId: "",
-    specialties: [], tasks: [], guidelines: [], flags: [], plans: [], models: [], keys: [], prompts: [], connectors: [] };
+    specialties: [], tasks: [], guidelines: [], flags: [], plans: [], models: [], keys: [], prompts: [], connectors: [], account_plans: [] };
 
   // Guidelines store multilingual summary as an object ({fr,en,ar}) and
   // structured excerpts as an array ("sections") - the generic dialog only
@@ -1590,6 +1612,33 @@ export const ADMIN_JS = `(function () {
     });
   }
 
+  // ---- Account/subscription Plans (top-level tab, api/account-plans.js) ----
+  // Deliberately outside the "Gestion IA" subnav/aiState.initialized lazy-init
+  // path above -- this is its own top-level view, just reusing the same
+  // generic entity-CRUD engine (renderAiGenericTable/openAiGenericDialog/
+  // saveAiGeneric/deleteAiGeneric are all entity-key-generic, not IA-specific
+  // despite the "Ai" naming).
+  async function renderPlansView() {
+    await loadAiEntity("account_plans");
+    el.plansContent.innerHTML = renderAiGenericTable("account_plans");
+  }
+
+  function bindPlansEvents() {
+    el.plansContent.addEventListener("click", function (e) {
+      var btn = e.target.closest("button");
+      if (!btn || btn.__busy) return;
+      if (btn.dataset.aiNew) { openAiGenericDialog(btn.dataset.aiNew, null); return; }
+      if (btn.dataset.aiEdit) {
+        var entity = btn.dataset.aiEdit;
+        var idKey = AI_ENTITIES[entity].idField || "id";
+        var row = (aiState[entity] || []).find(function (r) { return String(r[idKey]) === btn.dataset.id; });
+        openAiGenericDialog(entity, row);
+        return;
+      }
+      if (btn.dataset.aiDelete) { deleteAiGeneric(btn.dataset.aiDelete, btn.dataset.id, btn); return; }
+    });
+  }
+
   function escapeHtml(v) {
     return String(v == null ? "" : v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");
   }
@@ -1710,13 +1759,14 @@ export const ADMIN_JS = `(function () {
     document.querySelectorAll(".nav-item").forEach(function (n) {
       n.classList.toggle("active", n.dataset.view === view);
     });
-    ["dashboard","registrations","demandes","licenses","updates","ai","ai-management"].forEach(function (name) {
+    ["dashboard","registrations","demandes","licenses","updates","plans","ai","ai-management"].forEach(function (name) {
       var panel = byId("view-" + name);
       if (panel) panel.classList.toggle("hidden", name !== view);
     });
     // Opening the demands tab clears the "unseen" badge.
     if (view === "demandes" && state.demandeUnseen > 0) markDemandesSeen();
     if (view === "ai-management" && !aiState.initialized) { aiState.initialized = true; setAiView(aiState.view || "dashboard"); }
+    if (view === "plans") renderPlansView();
   }
 
   async function markDemandesSeen() {
@@ -2054,7 +2104,7 @@ export const ADMIN_JS = `(function () {
   function renderRegistrations() {
     if (state.loading.registrations) {
       el.regCount.textContent = "…";
-      el.regRows.innerHTML = skeletonTable(["Médecin", "Contact", "Licence", "Updates", ""], 5);
+      el.regRows.innerHTML = skeletonTable(["Médecin", "Contact", "Plan", "Licence", "Updates", ""], 5);
       return;
     }
     var rows = filteredRegistrations();
@@ -2064,8 +2114,10 @@ export const ADMIN_JS = `(function () {
       var st = r.status === "activated" ? badge("green", REG_STATUS.activated) : badge("amber", REG_STATUS.pending_activation);
       var lic = r.license ? '<div class="cell-sub">' + escapeHtml(r.license.key_hint) + ' (' + escapeHtml(r.license.license_type) + ')</div>' : '<div class="cell-sub">Pas encore de licence</div>';
       var skus = (r.update_skus || []).length ? (r.update_skus || []).map(function (s) { return badge("violet", s); }).join(" ") : '<div class="cell-sub">Pas de mise à jour payante</div>';
+      var plan = r.requested_plan_name ? badge("blue", r.requested_plan_name) : '<div class="cell-sub">—</div>';
       return '<tr><td><div class="cell-title">' + escapeHtml(r.full_name || "—") + '</div><div class="cell-sub">' + escapeHtml(r.specialty || "") + (r.wilaya ? " · " + escapeHtml(r.wilaya) : "") + '</div></td>' +
         '<td><div class="cell-sub">' + escapeHtml(r.phone || "") + '</div><div class="cell-sub">' + escapeHtml(r.email || "") + '</div></td>' +
+        '<td>' + plan + '</td>' +
         '<td>' + st + (r.cloud_doctor_id ? badge("violet","IA liée") : "") + lic + '</td>' +
         '<td><div class="cell-sub">Canal : ' + escapeHtml(r.update_channel || "stable") + '</div>' +
         '<div class="cell-sub">App : ' + escapeHtml(r.app_version || "—") + '</div>' + skus + '</td>' +
@@ -2078,7 +2130,7 @@ export const ADMIN_JS = `(function () {
           '<button class="btn danger" type="button" data-action="reg-delete" data-id="' + escapeHtml(r.id) + '">Supprimer</button>' +
         '</td></tr>';
     }).join("");
-    el.regRows.innerHTML = '<table class="data-table"><thead><tr><th>Médecin</th><th>Contact</th><th>Licence</th><th>Updates</th><th></th></tr></thead><tbody>' + html + '</tbody></table>';
+    el.regRows.innerHTML = '<table class="data-table"><thead><tr><th>Médecin</th><th>Contact</th><th>Plan</th><th>Licence</th><th>Updates</th><th></th></tr></thead><tbody>' + html + '</tbody></table>';
   }
 
   function filteredLicenses() {
@@ -2979,10 +3031,12 @@ export const ADMIN_JS = `(function () {
      "regEditDialog","regEditName","regEditMeta","regEditSpecialty","regEditForcedVersion","regEditSubmit",
      "cloudDoctorDialog","cloudDoctorRegName","cloudDoctorRegEmail","cloudDoctorAiPlan","cloudDoctorAssignedKey","cloudDoctorMonthlyLimit","cloudDoctorDailyLimit","cloudDoctorActive","cloudDoctorAiEnabled","cloudDoctorSubmit","cloudDoctorSkip",
      "logsDialog","logsTitle","logsRows","credentialsDialog","createdDoctorId","toast",
-     "aiSubNav","aiContent","aiGenericDialog","aiGenericForm","aiGenericTitle","aiGenericFields"
+     "aiSubNav","aiContent","aiGenericDialog","aiGenericForm","aiGenericTitle","aiGenericFields",
+     "plansContent"
     ].forEach(function (id) { el[id] = byId(id); });
     bindEvents();
     bindAiManagementEvents();
+    bindPlansEvents();
     setView("dashboard");
     autoConnect();
   }
