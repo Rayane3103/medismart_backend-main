@@ -331,10 +331,15 @@ async function listDoctors() {
 // panel loads. Guarded by a Redis marker so repeat health-check polls
 // after the first are a single cheap GET, not a full doctor-list rewrite.
 async function runAiOpenRouterMigrationOnce() {
-  // v2: also clears assigned_api_key_id (see below) -- bumped so this
-  // reruns even on a deploy where v1 already fired, rather than trusting
-  // a stale marker to mean "nothing left to do".
-  const marker = "migration:ai_openrouter_only_v2";
+  // v3: keepOnlyConnectorModelsEnabled() now self-heals if OpenRouter
+  // turns out to have zero enabled models (a key added to the connector
+  // without also running Detect Models/Import Models for it, a separate
+  // admin step, would otherwise leave v2's run having disabled every
+  // other provider's models with nothing to replace them -- every
+  // doctor's AI request failing with 503, worse than the wrong-provider
+  // problem this was meant to fix). Bumped so this reruns and can
+  // recover even on a deploy where v2 already fired into that state.
+  const marker = "migration:ai_openrouter_only_v3";
   const already = await redis.get(marker);
   if (already) return already;
   const plans = (await listPlans()).filter((p) => p.active !== false);
@@ -359,8 +364,18 @@ async function runAiOpenRouterMigrationOnce() {
     if (doctor.assigned_api_key_id) { doctor.assigned_api_key_id = ""; changed = true; }
     if (changed) { await saveDoctor(doctor); doctorsUpdated++; }
   }
-  const { updated: modelsDisabled } = await keepOnlyConnectorModelsEnabled("OpenRouter");
-  const result = { ran_at: nowIso(), doctors_updated: doctorsUpdated, models_disabled: modelsDisabled };
+  const { updated: modelsDisabled, skipped_no_replacement, restored: modelsRestored } = await keepOnlyConnectorModelsEnabled("OpenRouter");
+  const result = {
+    ran_at: nowIso(),
+    doctors_updated: doctorsUpdated,
+    models_disabled: modelsDisabled,
+    models_restored: modelsRestored,
+    // true means: OpenRouter has no enabled model yet, so nothing else
+    // was disabled (or was un-disabled if a prior run had). The admin
+    // still needs to open the OpenRouter connector and run Detect
+    // Models / Import Models before AI will actually work end to end.
+    openrouter_needs_models: skipped_no_replacement,
+  };
   await redis.set(marker, result);
   return result;
 }

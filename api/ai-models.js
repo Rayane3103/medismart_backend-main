@@ -88,17 +88,42 @@ export async function seedModelDefaults() {
 export async function keepOnlyConnectorModelsEnabled(connectorName) {
   const connectors = await listConnectors();
   const keepId = connectors.find((c) => c.name === connectorName)?.id;
-  if (!keepId) return { updated: 0 };
+  if (!keepId) return { updated: 0, skipped_no_replacement: false, restored: 0 };
   const rows = await modelStore.list();
+  // Never disable every other provider's models unless at least one
+  // model on the connector we're keeping is enabled -- "add an
+  // OpenRouter key" without also running Detect Models/Import Models for
+  // it (a separate admin step, in the connector's own detail screen)
+  // would otherwise leave listEnabledModels() empty and every doctor's
+  // AI request failing outright, which is worse than the wrong-provider
+  // problem this was meant to fix.
+  const keepConnectorHasWorkingModel = rows.some((r) => r.connector_id === keepId && r.enabled);
+  if (!keepConnectorHasWorkingModel) {
+    // Self-heal: restore whatever THIS migration previously disabled
+    // (tagged below), rather than leave every doctor's AI silently
+    // broken because OpenRouter has a key but no imported models yet.
+    // Never touches a model an admin disabled for their own reasons.
+    let restored = 0;
+    for (const row of rows) {
+      if (row.connector_id !== keepId && !row.enabled && row._disabled_by_openrouter_migration) {
+        row.enabled = true;
+        delete row._disabled_by_openrouter_migration;
+        await modelStore.save(row);
+        restored++;
+      }
+    }
+    return { updated: 0, skipped_no_replacement: true, restored };
+  }
   let updated = 0;
   for (const row of rows) {
     if (row.connector_id !== keepId && row.enabled) {
       row.enabled = false;
+      row._disabled_by_openrouter_migration = true;
       await modelStore.save(row);
       updated++;
     }
   }
-  return { updated };
+  return { updated, skipped_no_replacement: false, restored: 0 };
 }
 
 export async function getModel(id) { return modelStore.get(id); }
