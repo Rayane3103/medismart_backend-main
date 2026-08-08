@@ -14,6 +14,78 @@ import crypto from "node:crypto";
 import { redis, mgetExisting, cached, invalidate } from "./redis.js";
 import { sendEmail, emailConfigured, licenseEmailTemplate } from "./email.js";
 import { logAiAudit } from "./ai-audit.js";
+import { listPlans } from "./ai-plans.js";
+
+// Auto-provisions a cloud AI doctor account (redis `doctor:{id}`) the
+// moment a license is generated for a registration, so AI works the
+// instant a doctor activates instead of needing a SEPARATE manual admin
+// click (POST /api/admin/registrations/{id}/create-cloud-doctor in
+// index.js) that was easy to forget -- forgetting it is exactly what
+// produced "Aucune cle IA active n'est assignee a votre compte" on a
+// doctor's first AI attempt, the admin having generated and emailed a
+// license without ever visiting the separate AI-account screen.
+//
+// Deliberately NOT imported from index.js: index.js already imports
+// registration/license helpers FROM this module, so importing index.js
+// back here would be circular. This is a small, self-contained doctor
+// record builder instead, matching the shape index.js's own
+// ensureDoctorDefaults() produces for the fields that matter (AI access
+// itself does not depend on the rest of that normalization -- specialty
+// filters, per-doctor flag overrides, etc -- being present).
+//
+// Defaults to the "Professional" plan by name match (falling back to
+// whatever plan sorts first if that name isn't found) and ai_enabled:
+// true, both intentionally different from the manual endpoint's
+// opt-in-off/cheapest-plan defaults -- a doctor who paid for and
+// activated a real license should not need a second silent admin step
+// before AI actually works.
+async function provisionCloudAiDoctor(registration) {
+  if (!registration) return;
+  if (registration.cloud_doctor_id) {
+    const existing = await redis.get(`doctor:${registration.cloud_doctor_id}`);
+    if (existing) return; // already provisioned -- idempotent
+  }
+  const plans = (await listPlans()).filter((p) => p.active !== false);
+  const professional = plans.find((p) => /professional/i.test(p.name || "")) || plans[0];
+  const id = crypto.randomUUID();
+  const nowIso = new Date().toISOString();
+  const renewalDate = (() => {
+    const d = new Date();
+    d.setMonth(d.getMonth() + 1);
+    d.setDate(Math.min(d.getDate(), 28));
+    return d.toISOString().slice(0, 10);
+  })();
+  const doctor = {
+    id,
+    email: String(registration.email || "").trim(),
+    name: String(registration.full_name || "").trim() || "Doctor",
+    secret: crypto.randomBytes(12).toString("hex"),
+    registration_id: registration.id,
+    monthly_limit: 500,
+    daily_limit: 50,
+    monthly_used: 0,
+    daily_used: 0,
+    assigned_api_key_id: "",
+    ai_plan_id: professional?.id || "",
+    specialty_ids: [],
+    default_language: "fr",
+    allowed_model_ids_override: [],
+    disabled_flag_keys: [],
+    ai_enabled: true,
+    active: true,
+    renewal_date: renewalDate,
+    daily_usage_date: nowIso.slice(0, 10),
+    created_at: nowIso,
+    updated_at: nowIso,
+    monthly_credits: 500,
+    used_credits: 0,
+    unlimited: false,
+  };
+  await redis.set(`doctor:${id}`, doctor);
+  await redis.sadd("doctors:index", id);
+  registration.cloud_doctor_id = id;
+  await saveRegistration(registration);
+}
 
 // Kills a doctor's live web sessions the moment an admin revokes their
 // license -- check_license_still_valid() on web-full already blocks their
@@ -782,6 +854,16 @@ export async function handleLicensingAdminRoutes(req, res, path, ctx) {
       license_type: licenseType,
       registration_id: registration ? registration.id : null,
     });
+    if (registration) {
+      try {
+        await provisionCloudAiDoctor(registration);
+      } catch (e) {
+        // Never let AI provisioning block the license itself from being
+        // generated/emailed -- worst case an admin still has the manual
+        // create-cloud-doctor screen to fall back to for this one account.
+        await logAiAudit(session, "auto_provision_ai_failed", "license", license.id, { error: e.message });
+      }
+    }
 
     ok(res, {
       ok: true,

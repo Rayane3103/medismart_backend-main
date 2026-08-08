@@ -13,16 +13,25 @@ const REASONING_LEVELS = ["none", "low", "medium", "high"];
 // name -> which seeded connector it belongs to, resolved at seed time (see
 // seedModelDefaults) since connector ids are only known after connectors
 // have been created.
+//
+// Only the OpenRouter-routed models default to enabled: true -- the
+// non-OpenRouter ones (Claude/Gemini/GPT-4o/Groq, each needing its own
+// separate provider API key an admin running OpenRouter-only never adds)
+// are seeded disabled. Left enabled, listEnabledModels() would hand
+// callModelChain() a mixed-provider chain where most candidates fail with
+// "Aucune clé API active" before ever reaching a model that actually has
+// a key, and an admin picking one from the catalog dropdown with no idea
+// it needs its own separate key.
 const SEED_MODELS = [
   { name: "GPT-5 (via OpenRouter)", connectorName: "OpenRouter", model_id: "openai/gpt-5", vision: true, json_mode: true, streaming: true, reasoning_level: "high", context_window: 400000 },
-  { name: "Claude Opus", connectorName: "Anthropic", model_id: "claude-opus-4-5", vision: true, json_mode: true, streaming: true, reasoning_level: "high", context_window: 200000 },
-  { name: "Claude Sonnet", connectorName: "Anthropic", model_id: "claude-sonnet-4-5", vision: true, json_mode: true, streaming: true, reasoning_level: "medium", context_window: 200000 },
+  { name: "Claude Opus", connectorName: "Anthropic", model_id: "claude-opus-4-5", vision: true, json_mode: true, streaming: true, reasoning_level: "high", context_window: 200000, enabled: false },
+  { name: "Claude Sonnet", connectorName: "Anthropic", model_id: "claude-sonnet-4-5", vision: true, json_mode: true, streaming: true, reasoning_level: "medium", context_window: 200000, enabled: false },
   { name: "Qwen3 235B (via OpenRouter)", connectorName: "OpenRouter", model_id: "qwen/qwen3-235b-a22b", vision: false, json_mode: true, streaming: true, reasoning_level: "medium", context_window: 128000 },
   { name: "Qwen Max (via OpenRouter)", connectorName: "OpenRouter", model_id: "qwen/qwen-max", vision: false, json_mode: true, streaming: true, reasoning_level: "medium", context_window: 32000 },
   { name: "DeepSeek (via OpenRouter)", connectorName: "OpenRouter", model_id: "deepseek/deepseek-chat", vision: false, json_mode: true, streaming: true, reasoning_level: "medium", context_window: 64000 },
-  { name: "Gemini 2.5 Flash", connectorName: "Google Gemini", model_id: "gemini-2.5-flash", vision: true, json_mode: true, streaming: false, reasoning_level: "low", context_window: 1000000 },
-  { name: "GPT-4o", connectorName: "OpenAI", model_id: "gpt-4o", vision: true, json_mode: true, streaming: true, reasoning_level: "medium", context_window: 128000 },
-  { name: "Groq Llama 3.3 70B", connectorName: "Groq", model_id: "llama-3.3-70b-versatile", vision: false, json_mode: false, streaming: true, reasoning_level: "low", context_window: 128000 },
+  { name: "Gemini 2.5 Flash", connectorName: "Google Gemini", model_id: "gemini-2.5-flash", vision: true, json_mode: true, streaming: false, reasoning_level: "low", context_window: 1000000, enabled: false },
+  { name: "GPT-4o", connectorName: "OpenAI", model_id: "gpt-4o", vision: true, json_mode: true, streaming: true, reasoning_level: "medium", context_window: 128000, enabled: false },
+  { name: "Groq Llama 3.3 70B", connectorName: "Groq", model_id: "llama-3.3-70b-versatile", vision: false, json_mode: false, streaming: true, reasoning_level: "low", context_window: 128000, enabled: false },
 ];
 
 function ensureModelDefaults(row) {

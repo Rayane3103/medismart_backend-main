@@ -731,13 +731,17 @@ async function handleRequest(req, res) {
         // Management system (ai_plan_id -> AI Management catalog/connectors/
         // OpenRouter etc.), never onto the legacy named-key path
         // (assigned_api_key_id, Groq/Gemini only) unless an admin explicitly
-        // picks a legacy key. If the admin doesn't pick a plan either, fall
-        // back to the cheapest active AI Plan so "Défauts" still activates
-        // real AI instead of silently leaving the doctor unconfigured.
+        // picks a legacy key. If the admin doesn't pick a plan either, default
+        // to the "Professional" plan by name (the only tier actually in use --
+        // see api/licensing.js's provisionCloudAiDoctor, which auto-runs this
+        // same provisioning at license-generation time so this manual screen
+        // is now mostly a fallback for edge cases), falling back to whatever
+        // active plan sorts first if that name isn't found.
         let aiPlanId = String(body.ai_plan_id || "").trim();
         if (!aiPlanId && !String(body.assigned_api_key_id || "").trim()) {
           const activePlans = (await listPlans()).filter((p) => p.active);
-          aiPlanId = activePlans.sort((a, b) => (a.monthly_limit || 0) - (b.monthly_limit || 0))[0]?.id || "";
+          const professional = activePlans.find((p) => /professional/i.test(p.name || ""));
+          aiPlanId = professional?.id || activePlans.sort((a, b) => (a.monthly_limit || 0) - (b.monthly_limit || 0))[0]?.id || "";
         }
         const doctor = ensureDoctorDefaults({
           id: uuid(),
@@ -749,8 +753,10 @@ async function handleRequest(req, res) {
           daily_limit: toLimit(body.daily_limit, DEFAULT_LIMITS.daily_limit),
           assigned_api_key_id: String(body.assigned_api_key_id || "").trim(),
           ai_plan_id: aiPlanId,
-          // Opt-in: AI stays off until an admin explicitly enables it here.
-          ai_enabled: body.ai_enabled === true,
+          // A doctor reaching this screen already has an activated license --
+          // AI defaults ON now (override with ai_enabled: false to keep the
+          // old opt-in-off behavior for a specific account).
+          ai_enabled: body.ai_enabled !== false,
           active: body.active !== false,
         });
         await saveDoctor(doctor);
