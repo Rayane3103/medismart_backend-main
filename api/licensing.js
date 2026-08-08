@@ -285,6 +285,8 @@ function publicRegistrationState(reg) {
     clinic_name: reg.clinic_name,
     address: reg.address,
     wilaya: reg.wilaya,
+    requested_plan_id: reg.requested_plan_id || "",
+    requested_plan_name: reg.requested_plan_name || "",
     device_fingerprint: reg.device_fingerprint,
     app_version: reg.app_version,
     registered_at: reg.registered_at,
