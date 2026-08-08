@@ -140,7 +140,18 @@ export async function handleAiBrainRoutes(req, res, path, ctx) {
   if (!licenseCheck.ok) { err(res, 403, licenseCheck.reason); return true; }
 
   // ---- Feature Flags (global kill switch, or this doctor's own opt-out - see Doctor AI Configuration) ----
-  if ((doctor.disabled_flag_keys || []).includes(GLOBAL_BRAIN_FLAG) || await isFlagDisabled(GLOBAL_BRAIN_FLAG)) {
+  const globalFlagDisabled = await isFlagDisabled(GLOBAL_BRAIN_FLAG);
+  const doctorOptedOut = (doctor.disabled_flag_keys || []).includes(GLOBAL_BRAIN_FLAG);
+  if (doctorOptedOut || globalFlagDisabled) {
+    // Temporary diagnostic: this 503 was reported as persisting even after
+    // disabled_flag_keys was confirmed empty in the admin panel -- logging
+    // the exact values this specific request read so the next occurrence
+    // is provable from a Vercel log instead of another guess-and-check
+    // round trip. Remove once the live cause is confirmed.
+    console.error("[ai-brain] global flag 503", {
+      doctorId: doctor.id, email: doctor.email, doctorOptedOut,
+      disabledFlagKeys: doctor.disabled_flag_keys, globalFlagDisabled,
+    });
     err(res, 503, "IA temporairement désactivée par l'administrateur.");
     return true;
   }
