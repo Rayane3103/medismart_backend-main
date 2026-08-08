@@ -482,6 +482,32 @@ export async function licensingStats() {
 export async function handleLicensingPublicRoutes(req, res, path, ctx) {
   const { readJson, ok, err } = ctx;
 
+  // Lets web-full's activation step ("J'ai deja une cle") ask just for
+  // email/pin/key instead of re-typing name/specialty/phone/clinic/address --
+  // those were already captured at the info+plan step. Only ever returns a
+  // STILL-PENDING registration's info: once activated, re-exposing it here
+  // serves no purpose (the account already exists) and risks handing back
+  // stale data for what should now be a locked record.
+  if (path === "/api/registrations/lookup" && req.method === "GET") {
+    const email = cleanStr(new URL(req.url || "/", "http://local").searchParams.get("email"), 200).toLowerCase();
+    if (!email) { err(res, 400, "email requis"); return true; }
+    const reg = (await listRegistrations()).find(
+      (r) => r.email.toLowerCase() === email && r.status !== "activated"
+    );
+    if (!reg) { ok(res, { found: false }); return true; }
+    ok(res, {
+      found: true,
+      client_registration_id: reg.client_registration_id,
+      full_name: reg.full_name,
+      specialty: reg.specialty,
+      phone: reg.phone,
+      clinic_name: reg.clinic_name,
+      address: reg.address,
+      wilaya: reg.wilaya,
+    });
+    return true;
+  }
+
   // Desktop app uploads an offline-created registration (idempotent).
   if (path === "/api/registrations/sync") {
     if (req.method !== "POST") { err(res, 405, "Method not allowed"); return true; }

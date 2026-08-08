@@ -489,6 +489,7 @@ export const ADMIN_HTML = `<!doctype html>
       <div class="panel panel--hint" style="margin-bottom:14px;padding:14px 16px">
         <div class="cell-title" id="regEditName">—</div>
         <div class="cell-sub" id="regEditMeta"></div>
+        <div class="cell-sub" id="regEditInfo" style="margin-top:8px;line-height:1.7"></div>
       </div>
       <div class="form-grid">
         <label><span>Spécialité</span><select id="regEditSpecialty" autocomplete="off"></select></label>
@@ -2193,6 +2194,20 @@ export const ADMIN_JS = `(function () {
     el.regEditName.textContent = reg.full_name || "—";
     el.regEditMeta.textContent = "Version app actuelle : " + (reg.app_version || "—") +
       (reg.specialty_locked ? " · Spécialité verrouillée par admin" : "");
+    var statusLabel = reg.status === "activated" ? REG_STATUS.activated : REG_STATUS.pending_activation;
+    el.regEditInfo.innerHTML = [
+      ["Statut", statusLabel],
+      ["Plan choisi", reg.requested_plan_name || "—"],
+      ["Email", reg.email || "—"],
+      ["Téléphone", reg.phone || "—"],
+      ["Cabinet", reg.clinic_name || "—"],
+      ["Adresse", reg.address || "—"],
+      ["Wilaya", reg.wilaya || "—"],
+      ["Inscrit le", reg.registered_at || "—"],
+      ["Dernière synchro", reg.synced_at || "—"],
+    ].map(function (row) {
+      return '<div><strong>' + escapeHtml(row[0]) + ' :</strong> ' + escapeHtml(row[1]) + '</div>';
+    }).join("");
 
     // Dropdown built from specialties ALREADY IN USE across synced
     // registrations - this is the exact vocabulary the desktop app itself
@@ -3028,7 +3043,7 @@ export const ADMIN_JS = `(function () {
      "keyDialog","keyForm","keyDialogMode","keyDialogTitle","keyId","keyName","keyProvider","keyModel","keySecret","keyActive","clearKeyWrap","clearKeySecret",
      "doctorDialog","doctorForm","doctorDialogMode","doctorDialogTitle","doctorId","doctorEmail","doctorAssignedKey","doctorMonthlyLimit","doctorDailyLimit","doctorActive","doctorAiEnabled","doctorUsageTools","setMonthlyUsed","setDailyUsed","resetMonthly","resetDaily",
      "aiDoctorConfigDialog","aiDoctorConfigForm","aiDoctorConfigId","aiDoctorConfigTitle","aiDoctorConfigEnabled","aiDoctorConfigPlan","aiDoctorConfigLanguage","aiDoctorConfigMonthly","aiDoctorConfigDaily","aiDoctorConfigSpecialties","aiDoctorConfigModels","aiDoctorConfigFlags",
-     "regEditDialog","regEditName","regEditMeta","regEditSpecialty","regEditForcedVersion","regEditSubmit",
+     "regEditDialog","regEditName","regEditMeta","regEditInfo","regEditSpecialty","regEditForcedVersion","regEditSubmit",
      "cloudDoctorDialog","cloudDoctorRegName","cloudDoctorRegEmail","cloudDoctorAiPlan","cloudDoctorAssignedKey","cloudDoctorMonthlyLimit","cloudDoctorDailyLimit","cloudDoctorActive","cloudDoctorAiEnabled","cloudDoctorSubmit","cloudDoctorSkip",
      "logsDialog","logsTitle","logsRows","credentialsDialog","createdDoctorId","toast",
      "aiSubNav","aiContent","aiGenericDialog","aiGenericForm","aiGenericTitle","aiGenericFields",
