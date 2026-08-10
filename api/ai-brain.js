@@ -22,6 +22,7 @@ import { nowIso, cleanStr } from "./ai-store.js";
 import { getRouterRule } from "./ai-router.js";
 import { loadActivePromptVersion } from "./ai-prompts.js";
 import { findTaskByActionType, findTaskForRequest, getTask } from "./ai-catalog.js";
+import { specialtyPersona } from "./ai-personas.js";
 import { retrieveGuidelineExcerpts } from "./ai-knowledge-base.js";
 import { getPlan } from "./ai-plans.js";
 import { seedModelDefaults } from "./ai-models.js";
@@ -193,7 +194,11 @@ export async function handleAiBrainRoutes(req, res, path, ctx) {
   // web app (see cloudAi.js) so this resolves to that speciality's own task
   // instead of whichever task sorts first for this action_type. Optional:
   // the desktop app sends nothing and keeps the previous behaviour.
-  const requestSpecialty = cleanStr(body.specialty || "", 100);
+  // Falls back to the speciality captured on the doctor's own account at
+  // activation (provisionCloudAiDoctor in api/licensing.js), so a client that
+  // sends nothing -- the desktop app today -- still gets its speciality's
+  // task, prompt and persona rather than the first task matching action_type.
+  const requestSpecialty = cleanStr(body.specialty || doctor.specialty_name || "", 100);
   const resolvedTaskId = (body.task_id || (await findTaskForRequest(requestSpecialty, actionType))?.id || "");
   if (resolvedTaskId && ((doctor.disabled_flag_keys || []).includes(`task:${resolvedTaskId}`) || await isFlagDisabled(`task:${resolvedTaskId}`))) {
     err(res, 503, "Cette tâche clinique est temporairement désactivée par l'administrateur.");
@@ -229,7 +234,24 @@ export async function handleAiBrainRoutes(req, res, path, ctx) {
   // ---- Prompt Variables (defaults {{language}} to this doctor's configured
   // default when the caller doesn't specify one - see Doctor AI Configuration) ----
   const variables = { language: doctor.default_language || "fr", ...(body.variables || {}) };
-  const finalMessages = applyPromptLibrary(messages, promptVersion, guidelineText, variables);
+  let finalMessages = applyPromptLibrary(messages, promptVersion, guidelineText, variables);
+  // Built-in speciality persona -- the floor for tasks whose Prompt Library
+  // entry hasn't been authored/published yet, which is EVERY task on a fresh
+  // deployment (the library ships empty on purpose, it is the clinically
+  // reviewed path). applyPromptLibrary is a pure passthrough in that case, so
+  // without this the model got only whatever raw system message the calling
+  // app happened to send -- and nothing at all from a caller that sends none.
+  //
+  // Only when there is no published prompt: a real prompt version always
+  // wins, so this can never override admin-authored clinical content. Unlike
+  // applyPromptLibrary (which replaces the client's system message), this
+  // PREPENDS, so an app's own speciality prompt still applies on top.
+  if (!promptVersion) {
+    const personaSpecialty = requestSpecialty || cleanStr(doctor.specialty_name || "", 100);
+    const personaText = [specialtyPersona(personaSpecialty, actionType), guidelineText ? `Guidelines:\n${guidelineText}` : ""]
+      .filter(Boolean).join("\n\n");
+    finalMessages = [{ role: "system", content: personaText }, ...finalMessages];
+  }
   const promptRenderMs = Date.now() - promptRenderStartedAt;
   // 512 was too small a default once reasoning-heavy models (GPT-5 and
   // similar) entered the router chain - they spend part of the token budget

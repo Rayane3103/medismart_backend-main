@@ -219,6 +219,55 @@ export async function seedCatalogDefaults() {
   await taskStore.seedMissingByName(taskRows);
 }
 
+// Maps whatever speciality label a doctor actually registered with onto one
+// of SPECIALTY_NAMES. Registration captures free text, and both doctor apps
+// are French, so what arrives is "Cardiologue", "Medecine Generale",
+// "Traumatologie / Orthopedie", "Pediatre"... none of which match the
+// English catalog names the router keys on. Without this the speciality
+// recorded at activation is unusable for routing and every such doctor falls
+// back to the first task matching their action_type.
+//
+// Keyword-matched on an accent-stripped lowercase form rather than exact
+// equality, so "Rhumatologue", "rhumatologie" and "Rheumatology" all land on
+// the same catalog entry. Unknown input returns "" (caller keeps the
+// action_type-only fallback) rather than guessing wrong.
+const SPECIALTY_KEYWORDS = [
+  ["Cardiology", ["cardio"]],
+  ["Dermatology", ["dermato"]],
+  ["Ophthalmology", ["ophtalmo", "ophthalmo"]],
+  ["Rheumatology", ["rhumato", "rheumato"]],
+  ["Pneumology", ["pneumo", "pulmono", "respir"]],
+  ["Radiology", ["radiolo", "imagerie"]],
+  ["Pediatrics", ["pediatr", "paediatr"]],
+  ["Dentistry", ["dentiste", "dentaire", "dental", "dentist", "odonto", "stomato"]],
+  ["Orthopedics", ["orthoped", "orthopéd", "traumato"]],
+  ["Neurology", ["neurolo"]],
+  ["Gastroenterology", ["gastro", "hepato"]],
+  ["Gynecology", ["gyneco", "gynéco"]],
+  ["Obstetrics", ["obstetr", "obstétr", "sage-femme"]],
+  ["Endocrinology", ["endocrino", "diabeto", "diabéto"]],
+  ["Nephrology", ["nephro", "néphro"]],
+  ["Urology", ["urolo"]],
+  ["ENT", ["orl", "oto-rhino", "otorhino"]],
+  ["Emergency Medicine", ["urgence", "emergency"]],
+  ["Internal Medicine", ["interne", "internal"]],
+  ["Laboratory", ["laborato", "biolog", "analyse"]],
+  ["General Medicine", ["general", "général", "generalist", "omniprat", "famille", "family"]],
+];
+
+export function resolveSpecialtyName(raw) {
+  const text = String(raw || "")
+    .normalize("NFD").replace(/[̀-ͯ]/g, "")
+    .toLowerCase().trim();
+  if (!text) return "";
+  const exact = SPECIALTY_NAMES.find((name) => name.toLowerCase() === text);
+  if (exact) return exact;
+  for (const [name, keywords] of SPECIALTY_KEYWORDS) {
+    if (keywords.some((k) => text.includes(k.normalize("NFD").replace(/[̀-ͯ]/g, "")))) return name;
+  }
+  return "";
+}
+
 export async function getSpecialty(id) { return specialtyStore.get(id); }
 export async function listSpecialties() { return specialtyStore.list(); }
 export async function getTask(id) { return taskStore.get(id); }

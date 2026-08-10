@@ -15,6 +15,7 @@ import { redis, mgetExisting, cached, invalidate } from "./redis.js";
 import { sendEmail, emailConfigured, licenseEmailTemplate } from "./email.js";
 import { logAiAudit } from "./ai-audit.js";
 import { listPlans } from "./ai-plans.js";
+import { resolveSpecialtyName } from "./ai-catalog.js";
 
 // Auto-provisions a cloud AI doctor account (redis `doctor:{id}`) the
 // moment a license is generated for a registration, so AI works the
@@ -41,9 +42,26 @@ import { listPlans } from "./ai-plans.js";
 // before AI actually works.
 async function provisionCloudAiDoctor(registration) {
   if (!registration) return;
+  // Speciality resolved from what the doctor registered with ("Cardiologue",
+  // "Medecine Generale", ...) onto the AI catalog's own names. Stored on the
+  // doctor record so the brain can route to that speciality's clinical task,
+  // prompt and persona even when the calling app sends no speciality of its
+  // own (the desktop app today) -- see requestSpecialty in api/ai-brain.js.
+  // Empty when unrecognised, which just keeps the previous fallback.
+  const specialtyName = resolveSpecialtyName(registration.specialty);
   if (registration.cloud_doctor_id) {
     const existing = await redis.get(`doctor:${registration.cloud_doctor_id}`);
-    if (existing) return; // already provisioned -- idempotent
+    if (existing) {
+      // Backfill only: doctors provisioned before this field existed, or
+      // whose speciality was corrected on the registration afterwards. Never
+      // overwrites a non-empty value with an empty one.
+      if (specialtyName && existing.specialty_name !== specialtyName) {
+        existing.specialty_name = specialtyName;
+        existing.updated_at = new Date().toISOString();
+        await redis.set(`doctor:${existing.id}`, existing);
+      }
+      return; // already provisioned -- idempotent
+    }
   }
   const plans = (await listPlans()).filter((p) => p.active !== false);
   const professional = plans.find((p) => /professional/i.test(p.name || "")) || plans[0];
@@ -68,6 +86,7 @@ async function provisionCloudAiDoctor(registration) {
     assigned_api_key_id: "",
     ai_plan_id: professional?.id || "",
     specialty_ids: [],
+    specialty_name: specialtyName,
     default_language: "fr",
     allowed_model_ids_override: [],
     disabled_flag_keys: [],
