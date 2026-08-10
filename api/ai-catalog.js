@@ -10,11 +10,17 @@
 import { makeStore, makeCrudRoutes, cleanStr } from "./ai-store.js";
 import { auditLogger } from "./ai-audit.js";
 
+// Every speciality the doctor-facing apps can run as must appear here, or
+// its traffic silently falls back to another speciality's clinical task
+// (see findTaskForRequest). The web app maps its own French speciality ids
+// to these names before sending them (BRAIN_SPECIALTY_BY_ID in
+// medismart-web-full/frontend/src/cloudAi.js).
 const SPECIALTY_NAMES = [
   "General Medicine", "Cardiology", "Radiology", "Laboratory", "Pneumology",
   "Pediatrics", "Rheumatology", "Neurology", "Gastroenterology", "Dermatology",
   "Ophthalmology", "Gynecology", "Obstetrics", "Endocrinology", "Nephrology",
   "Urology", "Orthopedics", "ENT", "Emergency Medicine", "Internal Medicine",
+  "Dentistry",
 ];
 
 // Every clinical task is mapped to one of the action_type values the desktop
@@ -97,6 +103,8 @@ const TASK_DEFS = [
   { name: "Skin Lesion", action_type: "image_analysis", specialty: "Dermatology" },
   { name: "Rash", action_type: "image_analysis", specialty: "Dermatology" },
   { name: "Psoriasis", action_type: "image_analysis", specialty: "Dermatology" },
+  { name: "Dermatology Consultation", action_type: "chat", specialty: "Dermatology" },
+  { name: "Dermoscopy", action_type: "image_analysis", specialty: "Dermatology" },
   // Ophthalmology
   { name: "Visual Acuity", action_type: "chat", specialty: "Ophthalmology" },
   { name: "Retinal Imaging", action_type: "image_analysis", specialty: "Ophthalmology" },
@@ -137,11 +145,25 @@ const TASK_DEFS = [
   { name: "Drug Interaction", action_type: "chat", specialty: "Internal Medicine" },
   { name: "Prescription Review", action_type: "chat", specialty: "Internal Medicine" },
   { name: "Differential Diagnosis", action_type: "chat", specialty: "Internal Medicine" },
+  // Dentistry
+  { name: "Dental Consultation", action_type: "chat", specialty: "Dentistry" },
+  { name: "Dental Radiograph", action_type: "image_analysis", specialty: "Dentistry" },
+  { name: "Periodontal Assessment", action_type: "chat", specialty: "Dentistry" },
   // General Medicine (generic / cross-specialty document tasks)
   { name: "Medical Report", action_type: "pdf_analysis", specialty: "General Medicine" },
   { name: "Referral Letter", action_type: "pdf_analysis", specialty: "General Medicine" },
   { name: "SOAP Note", action_type: "chat", specialty: "General Medicine" },
   { name: "Clinical Summary", action_type: "multimodal_analysis", specialty: "General Medicine" },
+  { name: "General Image Review", action_type: "image_analysis", specialty: "General Medicine" },
+  // Per-specialty coverage for the two action types every speciality module
+  // in the doctor apps can emit (chat from its AI tab, image_analysis from
+  // its imaging/photo panels). Without a task of that action_type owned by
+  // the speciality, findTaskForRequest falls back to whichever speciality
+  // happens to sort first -- e.g. every dermatology image landed on
+  // Gastroenterology's "Abdominal CT" before this.
+  { name: "Radiology Consultation", action_type: "chat", specialty: "Radiology" },
+  { name: "Pediatric Imaging", action_type: "image_analysis", specialty: "Pediatrics" },
+  { name: "Joint Ultrasound", action_type: "image_analysis", specialty: "Rheumatology" },
 ];
 
 function ensureSpecialtyDefaults(row) {
@@ -208,6 +230,36 @@ export async function listTasks() { return taskStore.list(); }
 // action_type matches; admin can repoint this via the Clinical Tasks view.
 export async function findTaskByActionType(actionType) {
   const tasks = await listTasks();
+  return tasks.find((t) => t.active && t.action_type === actionType) || null;
+}
+
+// Speciality-aware task resolution. findTaskByActionType alone matches ONLY
+// on action_type against a list sorted alphabetically by task name, so every
+// caller sending the same action_type got the same clinical task -- and
+// therefore the same Prompt Library entry, model chain and guidelines --
+// regardless of which speciality the doctor was actually working in. In
+// practice that meant every `chat` in the whole product resolved to
+// "Abdominal Pain" (Gastroenterology) and every `image_analysis` to
+// "Abdominal CT", because those sort first. A dermatologist's skin photo was
+// being analysed under a gastroenterology CT task.
+//
+// Now: prefer a task owned by the caller's speciality, fall back to the old
+// action_type-only behaviour when the caller sends no speciality (the desktop
+// app today) or when that speciality owns no task of this action_type. The
+// fallback is what keeps this backwards-compatible.
+export async function findTaskForRequest(specialtyName, actionType) {
+  const tasks = await listTasks();
+  const wanted = cleanStr(specialtyName, 100).toLowerCase();
+  if (wanted) {
+    const specialties = await listSpecialties();
+    const specialty = specialties.find((s) => s.name.toLowerCase() === wanted);
+    if (specialty) {
+      const owned = tasks.find(
+        (t) => t.active && t.action_type === actionType && t.default_specialty_id === specialty.id,
+      );
+      if (owned) return owned;
+    }
+  }
   return tasks.find((t) => t.active && t.action_type === actionType) || null;
 }
 

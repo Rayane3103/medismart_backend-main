@@ -21,7 +21,7 @@ import { redis } from "./redis.js";
 import { nowIso, cleanStr } from "./ai-store.js";
 import { getRouterRule } from "./ai-router.js";
 import { loadActivePromptVersion } from "./ai-prompts.js";
-import { findTaskByActionType, getTask } from "./ai-catalog.js";
+import { findTaskByActionType, findTaskForRequest, getTask } from "./ai-catalog.js";
 import { retrieveGuidelineExcerpts } from "./ai-knowledge-base.js";
 import { getPlan } from "./ai-plans.js";
 import { seedModelDefaults } from "./ai-models.js";
@@ -78,8 +78,8 @@ async function validateLicense(doctor) {
 // prompt itself (Prompt Library: "each prompt can be linked to one or more
 // guidelines") and the router rule (task-level guidelines), so either place
 // an admin attaches a guideline takes effect.
-async function resolvePipeline({ actionType, taskId, plan, hasImages, hasFiles, requirePublished = true, extraKeywords = [] }) {
-  const resolvedTaskId = taskId || (await findTaskByActionType(actionType))?.id || "";
+async function resolvePipeline({ actionType, taskId, specialty = "", plan, hasImages, hasFiles, requirePublished = true, extraKeywords = [] }) {
+  const resolvedTaskId = taskId || (await findTaskForRequest(specialty, actionType))?.id || "";
   const rule = resolvedTaskId ? await getRouterRule(resolvedTaskId) : null;
   const task = resolvedTaskId ? await getTask(resolvedTaskId) : null;
 
@@ -189,7 +189,12 @@ export async function handleAiBrainRoutes(req, res, path, ctx) {
   const hasFiles = messagesHaveFiles(messages);
 
   // ---- Clinical Task Detection ----
-  const resolvedTaskId = (body.task_id || (await findTaskByActionType(actionType))?.id || "");
+  // body.specialty is the caller's current medical speciality, sent by the
+  // web app (see cloudAi.js) so this resolves to that speciality's own task
+  // instead of whichever task sorts first for this action_type. Optional:
+  // the desktop app sends nothing and keeps the previous behaviour.
+  const requestSpecialty = cleanStr(body.specialty || "", 100);
+  const resolvedTaskId = (body.task_id || (await findTaskForRequest(requestSpecialty, actionType))?.id || "");
   if (resolvedTaskId && ((doctor.disabled_flag_keys || []).includes(`task:${resolvedTaskId}`) || await isFlagDisabled(`task:${resolvedTaskId}`))) {
     err(res, 503, "Cette tâche clinique est temporairement désactivée par l'administrateur.");
     return true;
@@ -209,7 +214,7 @@ export async function handleAiBrainRoutes(req, res, path, ctx) {
   // ---- Prompt Library / Prompt Version / Guidelines Injection / Model Router ----
   const promptRenderStartedAt = Date.now();
   const { rule, promptId, promptVersion, guidelineText, cacheHit: pipelineCacheHit, models } = await resolvePipeline({
-    actionType, taskId: resolvedTaskId, plan: effectivePlan, hasImages, hasFiles,
+    actionType, taskId: resolvedTaskId, specialty: requestSpecialty, plan: effectivePlan, hasImages, hasFiles,
     extraKeywords: [body.variables?.chief_complaint, body.variables?.clinical_notes].filter(Boolean),
   });
 
