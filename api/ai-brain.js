@@ -126,6 +126,28 @@ async function resolvePipeline({ actionType, taskId, specialty = "", plan, hasIm
   return { taskId: resolvedTaskId, rule, promptMeta, promptId: promptMeta?.id || "", promptVersion, guidelineText, cacheHit: guidelineCacheHit || promptCacheHit, models };
 }
 
+// seedModelDefaults()/seedConnectorDefaults() run ONLY from the admin
+// panel's Connectors/Models tabs, so on a deployment where no admin had
+// ever opened those exact screens ai:model stayed empty and every doctor
+// got "Aucun modele IA disponible" forever, unrecoverable without
+// stumbling into the right tab. Calling it from the doctor path fixes
+// that -- but calling it on EVERY request (as it was) costs two extra
+// Upstash round trips per chat just to re-confirm a store that is
+// populated after the first one. Memoised per process instead: still
+// self-healing on a cold start, no per-request cost. The promise (not a
+// boolean) is cached so concurrent first requests share one seed rather
+// than racing; a failure clears it so the next request retries.
+let modelCatalogSeeded = null;
+function ensureModelCatalogSeeded() {
+  if (!modelCatalogSeeded) {
+    modelCatalogSeeded = seedModelDefaults().catch((error) => {
+      modelCatalogSeeded = null;
+      throw error;
+    });
+  }
+  return modelCatalogSeeded;
+}
+
 export async function handleAiBrainRoutes(req, res, path, ctx) {
   const { readJson, ok, err } = ctx;
   if (!PUBLIC_PATHS.has(path)) return false;
@@ -136,29 +158,37 @@ export async function handleAiBrainRoutes(req, res, path, ctx) {
   if (!doctor) { err(res, 401, "Token medecin invalide"); return true; }
   if (!doctor.active || !doctor.ai_enabled) { err(res, 403, "IA desactivee pour ce compte"); return true; }
 
+  // Everything below depends only on `doctor`, not on each other, but was
+  // awaited one at a time -- and each of these is a separate HTTPS round
+  // trip to Upstash from the Vercel function, so the request spent several
+  // hundred ms on serial I/O before the model was even selected. Resolved
+  // together here; the CHECKS stay in their original order below, so error
+  // precedence (license before kill-switch before quota) is unchanged.
+  const [licenseCheck, globalFlagDisabled, plan, costs, body] = await Promise.all([
+    validateLicense(doctor),
+    isFlagDisabled(GLOBAL_BRAIN_FLAG),
+    doctor.ai_plan_id ? getPlan(doctor.ai_plan_id) : Promise.resolve(null),
+    getCreditCosts(),
+    readJson(req),
+  ]);
+
   // ---- License Validation ----
-  const licenseCheck = await validateLicense(doctor);
   if (!licenseCheck.ok) { err(res, 403, licenseCheck.reason); return true; }
 
   // ---- Feature Flags (global kill switch, or this doctor's own opt-out - see Doctor AI Configuration) ----
-  const globalFlagDisabled = await isFlagDisabled(GLOBAL_BRAIN_FLAG);
   const doctorOptedOut = (doctor.disabled_flag_keys || []).includes(GLOBAL_BRAIN_FLAG);
   if (doctorOptedOut || globalFlagDisabled) {
-    // Temporary diagnostic: this 503 was reported as persisting even after
-    // disabled_flag_keys was confirmed empty in the admin panel -- logging
-    // the exact values this specific request read so the next occurrence
-    // is provable from a Vercel log instead of another guess-and-check
-    // round trip. Remove once the live cause is confirmed.
-    console.error("[ai-brain] global flag 503", {
-      doctorId: doctor.id, email: doctor.email, doctorOptedOut,
-      disabledFlagKeys: doctor.disabled_flag_keys, globalFlagDisabled,
-    });
-    err(res, 503, "IA temporairement désactivée par l'administrateur.");
+    // Says WHICH switch is off -- the per-doctor opt-out and the global
+    // kill switch live on different admin screens, and the previous shared
+    // message ("desactivee par l'administrateur") sent us hunting the
+    // global flag while the real cause was the per-doctor one.
+    err(res, 503, doctorOptedOut
+      ? "IA desactivee pour ce medecin (Config IA > Feature Flags desactives)."
+      : "IA temporairement desactivee par l'administrateur (Gestion IA > Feature Flags).");
     return true;
   }
 
   // ---- AI Plan Validation (credits + rate limit) ----
-  const plan = doctor.ai_plan_id ? await getPlan(doctor.ai_plan_id) : null;
   // Doctor AI Configuration: a per-doctor model allow-list narrower than the
   // plan's (never wider - the plan remains the outer boundary). Applied as
   // an extra intersection at model-chain build time, see buildModelChain's
@@ -169,9 +199,7 @@ export async function handleAiBrainRoutes(req, res, path, ctx) {
   const monthlyLimit = plan?.monthly_limit ?? doctor.monthly_limit ?? 0;
   const dailyLimit = plan?.daily_limit ?? doctor.daily_limit ?? 0;
 
-  const costs = await getCreditCosts();
   const requestStartedAt = Date.now();
-  const body = await readJson(req);
   const actionType = (body.action_type || "chat").toString();
   const cost = creditCostFor(costs, actionType);
 
@@ -181,14 +209,6 @@ export async function handleAiBrainRoutes(req, res, path, ctx) {
   if (dailyRemaining < cost) { err(res, 429, "Limite journaliere atteinte"); return true; }
 
   const rateLimitPerMin = plan?.rate_limit_per_min || 20;
-  const rate = await checkRateLimit(doctor.id, rateLimitPerMin);
-  if (!rate.allowed) { err(res, 429, `Trop de requêtes (limite ${rate.limit}/min). Réessayez dans un instant.`); return true; }
-
-  const messages = normalizeMessages(body);
-  if (!messages.length) { err(res, 400, "Message requis"); return true; }
-  const hasImages = messagesHaveImages(messages);
-  const hasFiles = messagesHaveFiles(messages);
-
   // ---- Clinical Task Detection ----
   // body.specialty is the caller's current medical speciality, sent by the
   // web app (see cloudAi.js) so this resolves to that speciality's own task
@@ -199,22 +219,30 @@ export async function handleAiBrainRoutes(req, res, path, ctx) {
   // sends nothing -- the desktop app today -- still gets its speciality's
   // task, prompt and persona rather than the first task matching action_type.
   const requestSpecialty = cleanStr(body.specialty || doctor.specialty_name || "", 100);
-  const resolvedTaskId = (body.task_id || (await findTaskForRequest(requestSpecialty, actionType))?.id || "");
+
+  // Rate limit and clinical-task detection are independent lookups; run
+  // them together rather than paying two serial Upstash round trips. The
+  // 429 is still checked first, so precedence is unchanged.
+  const [rate, detectedTask] = await Promise.all([
+    checkRateLimit(doctor.id, rateLimitPerMin),
+    body.task_id ? Promise.resolve(null) : findTaskForRequest(requestSpecialty, actionType),
+  ]);
+  if (!rate.allowed) { err(res, 429, `Trop de requêtes (limite ${rate.limit}/min). Réessayez dans un instant.`); return true; }
+
+  const messages = normalizeMessages(body);
+  if (!messages.length) { err(res, 400, "Message requis"); return true; }
+  const hasImages = messagesHaveImages(messages);
+  const hasFiles = messagesHaveFiles(messages);
+
+  // ---- Clinical Task Detection ----
+  const resolvedTaskId = (body.task_id || detectedTask?.id || "");
   if (resolvedTaskId && ((doctor.disabled_flag_keys || []).includes(`task:${resolvedTaskId}`) || await isFlagDisabled(`task:${resolvedTaskId}`))) {
     err(res, 503, "Cette tâche clinique est temporairement désactivée par l'administrateur.");
     return true;
   }
 
   // ---- Model catalog self-heal ----
-  // seedModelDefaults()/seedConnectorDefaults() previously ran ONLY from the
-  // admin panel's Connectors/Models tabs (handleAiConnectorsAdminRoutes /
-  // handleAiModelsAdminRoutes) -- on a deployment where no admin had ever
-  // opened those specific tabs, ai:model stayed genuinely empty and every
-  // doctor got "Aucun modele IA disponible" (line ~360 below) forever, with
-  // no way to recover short of an admin stumbling into the right screen.
-  // seedIfEmpty() is a no-op once the store is populated, so this is a cheap
-  // safety net, not a real seeding cost on the hot path after the first call.
-  await seedModelDefaults();
+  await ensureModelCatalogSeeded();
 
   // ---- Prompt Library / Prompt Version / Guidelines Injection / Model Router ----
   const promptRenderStartedAt = Date.now();
