@@ -76,6 +76,13 @@ export async function callModelChain(models, messages, overrides) {
         topP: model.top_p,
         timeoutMs: model.timeout_ms,
         jsonMode: model.json_mode,
+        // Forwarded to OpenRouter's "reasoning" param (openai_compatible
+        // connectors only - see ai-providers.js). The model row already
+        // carried reasoning_level; it was never actually sent anywhere,
+        // so a "high"-effort reasoning model like GPT-5 spent its request
+        // budget on hidden reasoning tokens with no way to bound that
+        // share, and a short response could come back empty.
+        reasoningEffort: model.reasoning_level,
       }, model.retry);
       networkMs = Date.now() - startedAt;
       await Promise.all([

@@ -72,7 +72,15 @@ function messagesContainWordJson(messages) {
   });
 }
 
-async function callOpenAiCompatible({ connector, apiKey, model, messages, maxTokens, temperature, topP, timeoutMs, jsonMode }) {
+// Valid OpenRouter reasoning.effort values (openrouter.ai/docs/use-cases/
+// reasoning-tokens, verified against the docs directly - not guessed).
+// Mirrors REASONING_LEVELS in ai-models.js, which is a subset: the model
+// catalog only exposes none/low/medium/high to admins, so this only ever
+// sees one of those four, but is written against the full documented set
+// in case that catalog is ever widened.
+const OPENROUTER_REASONING_EFFORTS = new Set(["max", "xhigh", "high", "medium", "low", "minimal", "none"]);
+
+async function callOpenAiCompatible({ connector, apiKey, model, messages, maxTokens, temperature, topP, timeoutMs, jsonMode, reasoningEffort }) {
   const { url, headers } = openAiCompatibleRequest(connector, model, apiKey);
   let effectiveMessages = messages;
   if (jsonMode && !messagesContainWordJson(messages)) {
@@ -80,6 +88,15 @@ async function callOpenAiCompatible({ connector, apiKey, model, messages, maxTok
   }
   const body = { model, messages: effectiveMessages, max_tokens: maxTokens, temperature, top_p: topP };
   if (jsonMode) body.response_format = { type: "json_object" };
+  // Only OpenRouter itself understands "reasoning" - sending it to a plain
+  // OpenAI/Groq/Azure/local endpoint would be an unknown-field 400 on a
+  // strict implementation. Restricted to the OpenRouter connector, and only
+  // when the model actually declares a reasoning level (not "none"/unset) -
+  // this is additive and changes nothing for any model that doesn't ask for it.
+  if (/openrouter/i.test(connector.name) && reasoningEffort && reasoningEffort !== "none"
+      && OPENROUTER_REASONING_EFFORTS.has(reasoningEffort)) {
+    body.reasoning = { effort: reasoningEffort };
+  }
   const upstream = await withTimeout(
     (signal) => fetch(url, { method: "POST", headers, body: JSON.stringify(body), signal }),
     timeoutMs,
@@ -235,8 +252,8 @@ async function callGemini({ connector, apiKey, model, messages, maxTokens, tempe
 }
 
 // ---------- unified dispatch ----------
-export async function callAiProviderChat({ connector, apiKey, model, messages, maxTokens, temperature, topP, timeoutMs, jsonMode }) {
-  const opts = { connector, model, messages, maxTokens, temperature, topP, timeoutMs, jsonMode };
+export async function callAiProviderChat({ connector, apiKey, model, messages, maxTokens, temperature, topP, timeoutMs, jsonMode, reasoningEffort }) {
+  const opts = { connector, model, messages, maxTokens, temperature, topP, timeoutMs, jsonMode, reasoningEffort };
   switch (connector.type) {
     case "anthropic": return callAnthropic({ apiKey, ...opts });
     case "gemini": return callGemini({ apiKey, ...opts });
